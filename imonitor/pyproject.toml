@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imonitor"
+version = "0.1.0"
+description = "Program-level execution monitor for Linux workloads"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "imonitor team"}]
+dependencies = []
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14.0.0"]
+gpu = ["nvidia-ml-py>=12.0.0"]
+web = ["fastapi>=0.110.0", "uvicorn>=0.29.0"]
+
+[project.scripts]
+imonitor = "imonitor.cli:main"
+imonitor-web = "imonitor.web_cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["imonitor*"]

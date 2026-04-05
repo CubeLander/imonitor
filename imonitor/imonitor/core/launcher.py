@@ -1,16 +1,42 @@
 from __future__ import annotations
 
+import shlex
+import shutil
 import subprocess
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from pathlib import Path
 
 
 _PROC = Path("/proc")
 
 
+@dataclass(slots=True)
+class LaunchResult:
+    process: subprocess.Popen[bytes]
+    transcript_path: Path | None = None
+    wrapper: str = "direct"
+
+
 class ProcessLauncher:
-    def start(self, command: list[str]) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(command, start_new_session=True)
+    def start(
+        self,
+        command: list[str],
+        transcript_path: Path | None = None,
+        use_script: bool = False,
+    ) -> LaunchResult:
+        if use_script and transcript_path is not None and shutil.which("script") is not None:
+            transcript_path.parent.mkdir(parents=True, exist_ok=True)
+            transcript_path.touch(exist_ok=True)
+            shell_cmd = "exec " + shlex.join(command)
+            process = subprocess.Popen(
+                ["script", "-qefc", shell_cmd, str(transcript_path)],
+                start_new_session=True,
+            )
+            return LaunchResult(process=process, transcript_path=transcript_path, wrapper="script")
+
+        process = subprocess.Popen(command, start_new_session=True)
+        return LaunchResult(process=process)
 
 
 class Procfs:
@@ -25,6 +51,27 @@ class Procfs:
             return path.read_text(encoding="utf-8").strip()
         except (FileNotFoundError, PermissionError, OSError):
             return ""
+
+    @staticmethod
+    def read_nspid_chain(pid: int) -> list[int]:
+        path = _PROC / str(pid) / "status"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (FileNotFoundError, PermissionError, OSError):
+            return []
+
+        for line in lines:
+            if not line.startswith("NSpid:"):
+                continue
+            parts = line.split(":", 1)[1].strip().split()
+            out: list[int] = []
+            for part in parts:
+                try:
+                    out.append(int(part))
+                except ValueError:
+                    continue
+            return out
+        return []
 
     @staticmethod
     def list_descendants(root_pid: int) -> set[int]:

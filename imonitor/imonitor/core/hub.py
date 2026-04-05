@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from imonitor.core.types import MonitorContext
+from imonitor.remote.client import RemoteDaemonClient
 from imonitor.pipelines.aggregator import Aggregator
 from imonitor.pipelines.rollup import build_rollup_rows
 from imonitor.sinks.base import Sink
@@ -12,9 +13,15 @@ from imonitor.signals.normalize import normalize_signal
 
 
 class Hub:
-    def __init__(self, sinks: list[Sink], live_sink: LiveSink | None = None) -> None:
+    def __init__(
+        self,
+        sinks: list[Sink],
+        live_sink: LiveSink | None = None,
+        remote_client: RemoteDaemonClient | None = None,
+    ) -> None:
         self.sinks = sinks
         self.live_sink = live_sink
+        self.remote_client = remote_client
         self.aggregator = Aggregator()
         self.raw_rows: list[dict[str, object]] = []
 
@@ -29,6 +36,8 @@ class Hub:
             self.aggregator.ingest(normalized)
             row = normalized.to_row()
             self.raw_rows.append(row)
+            if self.remote_client is not None:
+                self.remote_client.record_signal(row)
             if self.live_sink is not None:
                 self.live_sink.ingest(normalized, self.aggregator)
 

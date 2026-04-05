@@ -6,17 +6,20 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class SinkConfig:
-    sqlite: bool = True
-    parquet: bool = True
-    csv: bool = True
-    live: bool = True
+    sqlite: bool = False
+    parquet: bool = False
+    csv: bool = False
+    live: bool = False
 
 
 @dataclass(slots=True)
 class MonitorConfig:
     command: list[str]
-    out_dir: Path
+    out_dir: Path | None = None
+    write_local_report: bool = False
     interval_sec: float = 0.5
+    daemon_url: str | None = None
+    daemon_enabled: bool = True
     enable_gpu: bool = True
     enable_net: bool = True
     sink: SinkConfig = field(default_factory=SinkConfig)

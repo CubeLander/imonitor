@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from imonitor.config import MonitorConfig
+from imonitor.console import emit_log_line
 from imonitor.sensors.base import Sensor
 from imonitor.sensors.cpu_procfs import CPUProcfsSensor
 from imonitor.sensors.gpu_nvml import GPUNvmlSensor
@@ -26,6 +27,6 @@ def build_sensors(cfg: MonitorConfig) -> list[Sensor]:
         if gpu is not None:
             sensors.append(gpu)
         else:
-            print("[imonitor] gpu sensor disabled: pynvml/NVML unavailable")
+            emit_log_line("[imonitor] gpu sensor disabled: pynvml/NVML unavailable")
 
     return sensors

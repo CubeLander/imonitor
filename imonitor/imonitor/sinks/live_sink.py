@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from imonitor.console import emit_log_line
 from imonitor.pipelines.aggregator import Aggregator
 from imonitor.signals.schema import Signal
 
@@ -21,6 +22,8 @@ class LiveSink:
             "io.write_bps",
             "gpu.device.util_pct",
             "gpu.proc.mem_used_bytes",
+            "pcie.device.rx_bytes_s",
+            "pcie.device.tx_bytes_s",
         }:
             return
 
@@ -29,7 +32,7 @@ class LiveSink:
             return
         self._last_print_by_metric[signal.metric] = now
 
-        print(
+        emit_log_line(
             "[live] "
             f"metric={signal.metric} "
             f"value={signal.value:.3f} "

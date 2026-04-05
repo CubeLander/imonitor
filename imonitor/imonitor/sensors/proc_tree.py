@@ -13,6 +13,16 @@ class ProcTreeSensor(Sensor):
         pids = Procfs.list_descendants(ctx.root_pid)
         ctx.active_pids = pids
 
+        # Map PID aliases across namespace layers (e.g., host PID vs container PID).
+        pid_alias_to_local: dict[int, int] = {}
+        for pid in pids:
+            chain = Procfs.read_nspid_chain(pid)
+            if chain:
+                for alias in chain:
+                    pid_alias_to_local[alias] = pid
+            pid_alias_to_local[pid] = pid
+        ctx.metadata["pid_alias_to_local"] = pid_alias_to_local
+
         signals: list[Signal] = [
             Signal(
                 ts_ns=ts_ns,

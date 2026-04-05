@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>imonitor Task Manager</title>
+  <link rel="stylesheet" href="/assets/taskmanager.css" />
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar panel">
+      <div class="brand">
+        <div class="title">imonitor Task Manager</div>
+        <div class="muted">Windows 11 / 10 style live monitor</div>
+      </div>
+
+      <nav class="primary-nav" aria-label="Primary navigation">
+        <button class="nav-btn active" data-tab="performance">Performance</button>
+        <button class="nav-btn" data-tab="processes">Processes</button>
+        <button class="nav-btn" data-tab="sql">SQL</button>
+      </nav>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar panel">
+        <div class="toolbar-left">
+          <div class="section-title" id="pageTitle">Performance</div>
+          <div class="muted" id="pageSubtitle">CPU, memory, disk, ethernet, GPU, and PCIe at a glance.</div>
+        </div>
+        <div class="toolbar-right">
+          <label>Auto Refresh <input type="checkbox" id="autoRefresh" checked /></label>
+          <label title="When enabled, UI auto-switches to the latest running monitored run">Follow Running <input type="checkbox" id="followRunning" checked /></label>
+          <label>Window(s) <input id="windowSec" type="number" value="120" min="10" step="10" /></label>
+          <span class="pill mono" id="runPill">run=none</span>
+          <span class="pill mono" id="refreshAtPill">updated=--</span>
+          <button id="refreshNowBtn">Refresh Now</button>
+        </div>
+      </div>
+
+      <section id="tab-performance">
+        <div class="performance-shell">
+          <aside class="panel perf-nav">
+            <div class="section-title">Performance</div>
+            <div class="muted">Select a resource to inspect.</div>
+            <div class="perf-nav-list">
+              <button class="perf-nav-btn active" data-resource="cpu">
+                <span class="perf-nav-label">CPU</span>
+                <span class="perf-nav-meta" data-resource-meta="cpu">--</span>
+              </button>
+              <button class="perf-nav-btn" data-resource="memory">
+                <span class="perf-nav-label">Memory</span>
+                <span class="perf-nav-meta" data-resource-meta="memory">--</span>
+              </button>
+              <button class="perf-nav-btn" data-resource="disk">
+                <span class="perf-nav-label">Disk</span>
+                <span class="perf-nav-meta" data-resource-meta="disk">--</span>
+              </button>
+              <button class="perf-nav-btn" data-resource="ethernet">
+                <span class="perf-nav-label">Ethernet</span>
+                <span class="perf-nav-meta" data-resource-meta="ethernet">--</span>
+              </button>
+              <button class="perf-nav-btn" data-resource="gpu">
+                <span class="perf-nav-label">GPU</span>
+                <span class="perf-nav-meta" data-resource-meta="gpu">--</span>
+              </button>
+              <button class="perf-nav-btn" data-resource="pcie">
+                <span class="perf-nav-label">PCIe</span>
+                <span class="perf-nav-meta" data-resource-meta="pcie">--</span>
+              </button>
+            </div>
+          </aside>
+
+          <section class="panel perf-detail">
+            <div class="perf-detail-head">
+              <div>
+                <div class="section-title" id="perfResourceTitle">CPU</div>
+                <div class="muted" id="perfResourceSubtitle">Comparing host aggregate with the selected monitored run.</div>
+              </div>
+              <div class="perf-head-meta">
+                <span class="pill mono" id="perfResourcePill">resource=cpu</span>
+                <span class="pill mono" id="perfResourceStamp">updated=--</span>
+              </div>
+            </div>
+            <div id="perfSummaryCards" class="perf-summary"></div>
+            <div class="perf-chart-stack">
+              <div class="chart-box perf-chart-box">
+                <div id="perfChartPrimary" class="chart"></div>
+              </div>
+              <div class="chart-box perf-chart-box" id="perfSecondaryBox">
+                <div id="perfChartSecondary" class="chart"></div>
+              </div>
+            </div>
+            <div id="perfNotes" class="perf-notes muted"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-processes" class="panel hidden">
+        <div class="row space-between page-head">
+          <div>
+            <div class="section-title">Processes</div>
+            <div class="muted">Real-time system process table, with monitored run descendants tagged.</div>
+          </div>
+          <span class="pill" id="procCountPill">processes=0</span>
+        </div>
+        <div class="muted process-hint" id="procGpuHint"></div>
+
+        <div class="table-wrap process-table-wrap">
+          <table class="process-table">
+            <thead>
+              <tr>
+                <th data-sort="source" data-title="Type">Type</th>
+                <th data-sort="run_label" data-title="Run">Run</th>
+                <th data-sort="extra_count" data-title="Extra">Extra</th>
+                <th data-sort="comm" data-title="Name">Name</th>
+                <th data-sort="pid" data-title="PID">PID</th>
+                <th data-sort="cpu_pct" data-title="CPU %">CPU %</th>
+                <th data-sort="gpu_mem_used_bytes" data-title="GPU Mem">GPU Mem</th>
+                <th data-sort="mem_rss_bytes" data-title="Memory">Memory</th>
+                <th data-sort="io_read_bps" data-title="Disk Read/s">Disk Read/s</th>
+                <th data-sort="io_write_bps" data-title="Disk Write/s">Disk Write/s</th>
+                <th data-sort="net_rx_bps" data-title="Net Rx/s">Net Rx/s</th>
+                <th data-sort="net_tx_bps" data-title="Net Tx/s">Net Tx/s</th>
+              </tr>
+            </thead>
+            <tbody id="procTbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-sql" class="panel hidden">
+        <div class="sql-layout">
+          <section class="sql-main">
+            <div class="row sql-actions">
+              <button id="sqlTemplateBtn">Build Query Template</button>
+              <label>Interval(s) <input id="sqlIntervalSec" type="number" value="30" min="1" step="1" /></label>
+              <label>Limit <input id="sqlLimit" type="number" value="500" min="1" max="10000" step="10" /></label>
+              <button id="sqlRunBtn" class="primary">Run SQL</button>
+            </div>
+
+            <textarea id="sqlText">SELECT run_id, status, sample_count, start_ns, end_ns FROM runs ORDER BY start_ns DESC LIMIT 20;</textarea>
+            <div class="muted" id="sqlMeta">rows=0</div>
+
+            <div class="table-wrap sql-table-wrap">
+              <table>
+                <thead id="sqlHead"></thead>
+                <tbody id="sqlBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <aside class="sql-runs">
+            <div class="section-title">Recent Runs</div>
+            <div class="muted sidebar-label">Click to set current run_id for SQL templates and performance overlays.</div>
+            <div id="runList" class="run-list"></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/assets/taskmanager.js"></script>
+</body>
+</html>

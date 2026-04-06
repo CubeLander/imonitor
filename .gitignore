@@ -1,10 +1,8 @@
-# Keep repository focused on imonitor only.
-# Ignore everything at repo root by default.
-/*
-
-# Keep this control file.
-!/.gitignore
-
-# Keep the imonitor project and all of its contents.
-!/imonitor/
-!/imonitor/**
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+runs/

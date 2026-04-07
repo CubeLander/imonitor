@@ -596,6 +596,56 @@ textarea {
   display: none !important;
 }
 
+.perf-chart-stack.gpu-mini-charts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.perf-chart-stack.gpu-mini-charts .perf-chart-box,
+.perf-chart-stack.gpu-mini-charts .chart {
+  min-height: 150px !important;
+  height: 150px;
+}
+
+.gpu-profiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.gpu-prof-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px;
+}
+
+.gpu-prof-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #21324c;
+  margin-bottom: 8px;
+}
+
+.gpu-prof-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.gpu-prof-row .k {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.gpu-prof-row .v {
+  color: var(--text);
+  font-size: 12px;
+}
+
 #tab-processes,
 #tab-sql {
   min-width: 0;
@@ -610,6 +660,7 @@ textarea {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
+
 
   .perf-nav-btn {
     min-height: 72px;
@@ -637,6 +688,7 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+
   .chart,
   .perf-chart-box {
     min-height: 280px;
@@ -660,6 +712,10 @@ textarea {
   }
 
   .perf-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .gpu-profiles {
     grid-template-columns: 1fr;
   }
 

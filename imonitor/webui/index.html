@@ -90,7 +90,11 @@
               <div class="chart-box perf-chart-box" id="perfSecondaryBox">
                 <div id="perfChartSecondary" class="chart"></div>
               </div>
+              <div class="chart-box perf-chart-box hidden" id="perfTertiaryBox">
+                <div id="perfChartTertiary" class="chart"></div>
+              </div>
             </div>
+            <div id="gpuProfiles" class="gpu-profiles hidden"></div>
             <div id="perfNotes" class="perf-notes muted"></div>
           </section>
         </div>
@@ -116,7 +120,7 @@
                 <th data-sort="comm" data-title="Name">Name</th>
                 <th data-sort="pid" data-title="PID">PID</th>
                 <th data-sort="cpu_pct" data-title="CPU %">CPU %</th>
-                <th data-sort="gpu_mem_used_bytes" data-title="GPU Mem">GPU Mem</th>
+                <th id="procGpuAnchor" data-title="GPU">GPU</th>
                 <th data-sort="mem_rss_bytes" data-title="Memory">Memory</th>
                 <th data-sort="io_read_bps" data-title="Disk Read/s">Disk Read/s</th>
                 <th data-sort="io_write_bps" data-title="Disk Write/s">Disk Write/s</th>

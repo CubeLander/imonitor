@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from imonitor.console import emit_log_line
 from imonitor.daemon.store import DaemonStore
@@ -39,6 +40,7 @@ class SystemHostSampler:
 
         self._nvml = None
         self._nvml_handles = []
+        self._gpu_static_cache: dict[str, dict[str, Any]] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -155,6 +157,45 @@ class SystemHostSampler:
         self._last_ts_ns = ts_ns
         return rows
 
+    def gpu_channels(self) -> list[str]:
+        if not self._gpu_enabled:
+            return []
+        if not self._ensure_nvml():
+            return []
+        return [f"gpu{i}" for i, _ in enumerate(self._nvml_handles)]
+
+    def gpu_static_profiles(self) -> dict[str, dict[str, Any]]:
+        if not self._gpu_enabled:
+            return {}
+        if not self._ensure_nvml():
+            return {}
+        if self._gpu_static_cache is not None:
+            return dict(self._gpu_static_cache)
+
+        out: dict[str, dict[str, Any]] = {}
+        for idx, handle in enumerate(self._nvml_handles):
+            channel = f"gpu{idx}"
+            name = self._read_nvml_str(handle, ("nvmlDeviceGetName",))
+            uuid = self._read_nvml_str(handle, ("nvmlDeviceGetUUID",))
+            pci_bus_id = self._read_pci_bus_id(handle)
+            mem_total = self._read_mem_total(handle)
+            gen_max = self._read_int_metric(handle, ("nvmlDeviceGetMaxPcieLinkGeneration",))
+            width_max = self._read_int_metric(handle, ("nvmlDeviceGetMaxPcieLinkWidth",))
+            power_limit_w = self._read_power_limit_watts(handle)
+            out[channel] = {
+                "channel": channel,
+                "name": name,
+                "uuid": uuid,
+                "pci_bus_id": pci_bus_id,
+                "mem_total_bytes": mem_total,
+                "pcie_gen_max": gen_max,
+                "pcie_width_max": width_max,
+                "power_limit_w": power_limit_w,
+                "numa_node": self._read_numa_node(pci_bus_id),
+            }
+        self._gpu_static_cache = out
+        return dict(out)
+
     def _collect_gpu(self, ts_ns: int) -> list[dict[str, object]]:
         if not self._gpu_enabled:
             return []
@@ -164,6 +205,7 @@ class SystemHostSampler:
         rows: list[dict[str, object]] = []
         util_values: list[float] = []
         mem_used_total = 0.0
+        power_total_w = 0.0
         pcie_rx_total = 0.0
         pcie_tx_total = 0.0
         link_count_total = 0.0
@@ -180,6 +222,10 @@ class SystemHostSampler:
             mem_used_total += float(mem.used)
             rows.append(self._row(ts_ns, f"system.gpu.{channel}.util_pct", float(util.gpu), "pct"))
             rows.append(self._row(ts_ns, f"system.gpu.{channel}.mem_used_bytes", float(mem.used), "bytes"))
+            power_w = self._read_power_watts(handle)
+            if power_w is not None:
+                power_total_w += power_w
+                rows.append(self._row(ts_ns, f"system.gpu.{channel}.power_w", power_w, "W"))
 
             pcie_rx = self._read_pcie_bytes_per_sec(handle, "rx")
             pcie_tx = self._read_pcie_bytes_per_sec(handle, "tx")
@@ -189,11 +235,18 @@ class SystemHostSampler:
             if pcie_tx is not None:
                 pcie_tx_total += pcie_tx
                 rows.append(self._row(ts_ns, f"system.pcie.{channel}.tx_bytes_s", pcie_tx, "bytes/s"))
+            pcie_tp = float(pcie_rx or 0.0) + float(pcie_tx or 0.0)
+            rows.append(self._row(ts_ns, f"system.pcie.{channel}.throughput_bytes_s", pcie_tp, "bytes/s"))
 
             pcie_gen_cur = self._read_int_metric(handle, ("nvmlDeviceGetCurrPcieLinkGeneration",))
             pcie_gen_max = self._read_int_metric(handle, ("nvmlDeviceGetMaxPcieLinkGeneration",))
             pcie_w_cur = self._read_int_metric(handle, ("nvmlDeviceGetCurrPcieLinkWidth",))
             pcie_w_max = self._read_int_metric(handle, ("nvmlDeviceGetMaxPcieLinkWidth",))
+            pcie_gen_static = pcie_gen_max if pcie_gen_max is not None else pcie_gen_cur
+            if pcie_gen_static is not None:
+                rows.append(self._row(ts_ns, f"system.pcie.{channel}.link.gen", pcie_gen_static, "count"))
+            if pcie_w_cur is not None:
+                rows.append(self._row(ts_ns, f"system.pcie.{channel}.link.width", pcie_w_cur, "count"))
             if pcie_gen_cur is not None:
                 rows.append(self._row(ts_ns, f"system.pcie.{channel}.link.gen.current", pcie_gen_cur, "count"))
             if pcie_gen_max is not None:
@@ -210,11 +263,39 @@ class SystemHostSampler:
         if util_values:
             rows.append(self._row(ts_ns, "system.gpu.util_pct", sum(util_values) / len(util_values), "pct"))
         rows.append(self._row(ts_ns, "system.gpu.mem_used_bytes", mem_used_total, "bytes"))
+        rows.append(self._row(ts_ns, "system.gpu.power_w", power_total_w, "W"))
         rows.append(self._row(ts_ns, "system.pcie.rx_bytes_s", pcie_rx_total, "bytes/s"))
         rows.append(self._row(ts_ns, "system.pcie.tx_bytes_s", pcie_tx_total, "bytes/s"))
+        rows.append(self._row(ts_ns, "system.pcie.throughput_bytes_s", pcie_rx_total + pcie_tx_total, "bytes/s"))
         rows.append(self._row(ts_ns, "system.pcie.channel_count", float(channel_count), "count"))
         rows.append(self._row(ts_ns, "system.nvlink.link_count", link_count_total, "count"))
         return rows
+
+    def _read_power_watts(self, handle) -> float | None:
+        fn = getattr(self._nvml, "nvmlDeviceGetPowerUsage", None)
+        if fn is None:
+            return None
+        try:
+            mw = float(fn(handle))
+        except Exception:
+            return None
+        if mw < 0:
+            return 0.0
+        return mw / 1000.0
+
+    def _read_power_limit_watts(self, handle) -> float | None:
+        for name in ("nvmlDeviceGetEnforcedPowerLimit", "nvmlDeviceGetPowerManagementLimit"):
+            fn = getattr(self._nvml, name, None)
+            if fn is None:
+                continue
+            try:
+                mw = float(fn(handle))
+            except Exception:
+                continue
+            if mw < 0:
+                return 0.0
+            return mw / 1000.0
+        return None
 
     def _read_pcie_bytes_per_sec(self, handle, direction: str) -> float | None:
         fn = getattr(self._nvml, "nvmlDeviceGetPcieThroughput", None)
@@ -257,6 +338,66 @@ class SystemHostSampler:
             except Exception:
                 continue
         return None
+
+    def _read_nvml_str(self, handle, fn_names: tuple[str, ...]) -> str:
+        for name in fn_names:
+            fn = getattr(self._nvml, name, None)
+            if fn is None:
+                continue
+            try:
+                raw = fn(handle)
+            except Exception:
+                continue
+            if isinstance(raw, (bytes, bytearray)):
+                try:
+                    return raw.decode("utf-8", errors="ignore")
+                except Exception:
+                    return str(raw)
+            return str(raw)
+        return ""
+
+    def _read_mem_total(self, handle) -> float:
+        fn = getattr(self._nvml, "nvmlDeviceGetMemoryInfo", None)
+        if fn is None:
+            return 0.0
+        try:
+            mem = fn(handle)
+            return float(getattr(mem, "total", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _read_pci_bus_id(self, handle) -> str:
+        fn = getattr(self._nvml, "nvmlDeviceGetPciInfo", None)
+        if fn is None:
+            return ""
+        try:
+            info = fn(handle)
+        except Exception:
+            return ""
+        bus_id = getattr(info, "busId", "")
+        if isinstance(bus_id, (bytes, bytearray)):
+            bus_id = bus_id.decode("utf-8", errors="ignore")
+        s = str(bus_id).strip()
+        if not s:
+            return ""
+        # NVML may return 00000000:31:00.0; sysfs uses 0000:31:00.0
+        parts = s.split(":")
+        if len(parts) == 3 and len(parts[0]) > 4:
+            parts[0] = parts[0][-4:]
+            return ":".join(parts)
+        return s
+
+    @staticmethod
+    def _read_numa_node(pci_bus_id: str) -> int | None:
+        if not pci_bus_id:
+            return None
+        path = Path("/sys/bus/pci/devices") / pci_bus_id / "numa_node"
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+            val = int(raw)
+        except Exception:
+            return None
+        return val if val >= 0 else None
 
     def _ensure_nvml(self) -> bool:
         if self._nvml is not None:

@@ -150,7 +150,10 @@ def _create_app(db_path: Path | None = None) -> FastAPI:
         )
 
         extras_by_pid: dict[int, dict[str, dict[str, object]]] = {}
-        has_gpu_proc_metric = bool(snapshot.get("capabilities", {}).get("gpu_proc_mem"))
+        snapshot_caps = dict(snapshot.get("capabilities", {}) or {})
+        has_gpu_proc_mem = bool(snapshot_caps.get("gpu_proc_mem"))
+        has_gpu_proc_util = bool(snapshot_caps.get("gpu_proc_util"))
+        gpu_channels = [str(x) for x in (snapshot_caps.get("gpu_channels") or []) if str(x)]
         for item in metric_rows:
             pid = int(item["pid"])
             metric = str(item["metric"])
@@ -164,7 +167,7 @@ def _create_app(db_path: Path | None = None) -> FastAPI:
                 "run_id": str(item["run_id"]),
             }
             if metric == "gpu.proc.mem_used_bytes":
-                has_gpu_proc_metric = True
+                has_gpu_proc_mem = True
 
         monitored_count = 0
         for row in rows:
@@ -195,7 +198,9 @@ def _create_app(db_path: Path | None = None) -> FastAPI:
             },
             "running_runs": live_running_runs,
             "capabilities": {
-                "gpu_proc_mem": has_gpu_proc_metric,
+                "gpu_proc_mem": has_gpu_proc_mem,
+                "gpu_proc_util": has_gpu_proc_util,
+                "gpu_channels": gpu_channels,
             },
             "sampler_enabled": process_sampler.enabled,
             "sampling_interval_sec": process_sampler.interval_sec,
@@ -216,6 +221,36 @@ def _create_app(db_path: Path | None = None) -> FastAPI:
         payload["db_path"] = str(store.db_path)
         payload["sampler_enabled"] = system_sampler.enabled
         payload["sampling_interval_sec"] = system_sampler.interval_sec
+        gpu_channels = system_sampler.gpu_channels()
+        payload["gpu_channels"] = gpu_channels
+
+        static_profiles = system_sampler.gpu_static_profiles()
+        summary = dict(payload.get("summary", {}) or {})
+        latest_ts_ns = int(payload.get("latest_ts_ns") or 0)
+        dynamic_profiles: dict[str, dict[str, Any]] = {}
+        for channel in gpu_channels:
+            rx = float(summary.get(f"system.pcie.{channel}.rx_bytes_s", 0.0) or 0.0)
+            tx = float(summary.get(f"system.pcie.{channel}.tx_bytes_s", 0.0) or 0.0)
+            throughput = float(
+                summary.get(
+                    f"system.pcie.{channel}.throughput_bytes_s",
+                    rx + tx,
+                )
+                or 0.0
+            )
+            dynamic_profiles[channel] = {
+                "util_pct": float(summary.get(f"system.gpu.{channel}.util_pct", 0.0) or 0.0),
+                "mem_used_bytes": float(summary.get(f"system.gpu.{channel}.mem_used_bytes", 0.0) or 0.0),
+                "power_w": float(summary.get(f"system.gpu.{channel}.power_w", 0.0) or 0.0),
+                "pcie_rx_bytes_s": rx,
+                "pcie_tx_bytes_s": tx,
+                "pcie_throughput_bytes_s": throughput,
+                "pcie_gen_current": float(summary.get(f"system.pcie.{channel}.link.gen.current", 0.0) or 0.0),
+                "pcie_width_current": float(summary.get(f"system.pcie.{channel}.link.width.current", 0.0) or 0.0),
+                "sample_ts_ns": latest_ts_ns,
+            }
+        payload["gpu_static_profiles"] = static_profiles
+        payload["gpu_dynamic_profiles"] = dynamic_profiles
         return payload
 
     @app.get("/api/system/performance")
@@ -224,6 +259,7 @@ def _create_app(db_path: Path | None = None) -> FastAPI:
         payload["db_path"] = str(store.db_path)
         payload["sampler_enabled"] = system_sampler.enabled
         payload["sampling_interval_sec"] = system_sampler.interval_sec
+        payload["gpu_channels"] = system_sampler.gpu_channels()
         return payload
 
     @app.post("/api/agent/run/start")

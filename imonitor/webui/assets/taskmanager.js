@@ -49,6 +49,7 @@
   const charts = {
     perfPrimary: echarts.init(document.getElementById("perfChartPrimary")),
     perfSecondary: echarts.init(document.getElementById("perfChartSecondary")),
+    perfTertiary: echarts.init(document.getElementById("perfChartTertiary")),
   };
 
   function escHtml(v) {
@@ -74,6 +75,10 @@
 
   function fmtPct(n) {
     return `${Number(n || 0).toFixed(1)}%`;
+  }
+
+  function fmtWatts(n) {
+    return `${Number(n || 0).toFixed(1)} W`;
   }
 
   function toMs(tsNs) {
@@ -130,10 +135,50 @@
     });
   }
 
+  function gpuChannelLabel(channel) {
+    const m = /^gpu(\d+)$/.exec(String(channel));
+    if (m) return `GPU ${m[1]}`;
+    return `GPU ${String(channel)}`;
+  }
+
+  function parseGpuResource(resource) {
+    const m = /^gpu:(.+)$/.exec(String(resource || ""));
+    if (!m) return null;
+    return { channel: m[1] };
+  }
+
+  function collectHostGpuChannelsFromSummary(summary) {
+    const out = {};
+    for (const [metric, value] of Object.entries(summary || {})) {
+      const m = /^system\.gpu\.(gpu[^.]+)\.(util_pct|mem_used_bytes|power_w)$/.exec(String(metric));
+      if (!m) continue;
+      const channel = m[1];
+      const field = m[2];
+      const row = out[channel] || {};
+      row[field] = Number(value || 0);
+      out[channel] = row;
+    }
+    return out;
+  }
+
+  function collectHostGpuChannelSeries(series) {
+    const out = {};
+    for (const [metric, rows] of Object.entries(series || {})) {
+      const m = /^system\.gpu\.(gpu[^.]+)\.(util_pct|mem_used_bytes|power_w)$/.exec(String(metric));
+      if (!m) continue;
+      const channel = m[1];
+      const field = m[2];
+      const row = out[channel] || { util_pct: [], mem_used_bytes: [], power_w: [] };
+      row[field] = rows || [];
+      out[channel] = row;
+    }
+    return out;
+  }
+
   function collectHostPcieChannelsFromSummary(summary) {
     const out = {};
     for (const [metric, value] of Object.entries(summary || {})) {
-      const m = /^system\.pcie\.(gpu[^.]+)\.(rx_bytes_s|tx_bytes_s|link\.gen\.current|link\.gen\.max|link\.width\.current|link\.width\.max)$/.exec(String(metric));
+      const m = /^system\.pcie\.(gpu[^.]+)\.(rx_bytes_s|tx_bytes_s|throughput_bytes_s|link\.gen|link\.gen\.current|link\.gen\.max|link\.width|link\.width\.current|link\.width\.max)$/.exec(String(metric));
       if (!m) continue;
       const channel = m[1];
       const field = m[2].replaceAll(".", "_");
@@ -147,11 +192,11 @@
   function collectHostPcieChannelSeries(series) {
     const out = {};
     for (const [metric, rows] of Object.entries(series || {})) {
-      const m = /^system\.pcie\.(gpu[^.]+)\.(rx_bytes_s|tx_bytes_s)$/.exec(String(metric));
+      const m = /^system\.pcie\.(gpu[^.]+)\.(rx_bytes_s|tx_bytes_s|throughput_bytes_s)$/.exec(String(metric));
       if (!m) continue;
       const channel = m[1];
       const field = m[2];
-      const row = out[channel] || { rx_bytes_s: [], tx_bytes_s: [] };
+      const row = out[channel] || { rx_bytes_s: [], tx_bytes_s: [], throughput_bytes_s: [] };
       row[field] = rows || [];
       out[channel] = row;
     }
@@ -263,37 +308,244 @@
 
   function renderPerformanceNav() {
     const summary = state.systemLatest?.summary || {};
+    const systemSeries = state.systemPerf?.series || {};
 
     const cpu = fmtPct(summary["system.cpu.util_pct"]);
     const memUsed = summary["system.mem.used_bytes"];
     const memTotal = summary["system.mem.total_bytes"];
     const disk = fmtRatePair(summary["system.disk.read_bps"], summary["system.disk.write_bps"]);
     const net = fmtRatePair(summary["system.net.rx_bps"], summary["system.net.tx_bps"]);
-    const gpu = `${fmtPct(summary["system.gpu.util_pct"])} | ${fmtBytes(summary["system.gpu.mem_used_bytes"])}`;
     const pcie = fmtRatePair(summary["system.pcie.rx_bytes_s"], summary["system.pcie.tx_bytes_s"]);
     const memoryText = fmtBytesPair(memUsed, memTotal);
 
-    const values = {
-      cpu,
-      memory: memoryText,
-      disk,
-      ethernet: net,
-      gpu,
-      pcie,
-    };
+    const hostGpuSummary = collectHostGpuChannelsFromSummary(summary);
+    const hostGpuSeries = collectHostGpuChannelSeries(systemSeries);
+    const samplerGpuChannels = Array.isArray(state.systemLatest?.gpu_channels)
+      ? state.systemLatest.gpu_channels.map((x) => String(x))
+      : [];
+    const hostGpuChannelMap = { ...hostGpuSummary, ...hostGpuSeries };
+    for (const channel of samplerGpuChannels) {
+      if (!hostGpuChannelMap[channel]) hostGpuChannelMap[channel] = {};
+    }
+    const hostGpuChannels = sortedChannelKeys(hostGpuChannelMap);
 
-    document.querySelectorAll(".perf-nav-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.resource === state.perfResource);
-      const key = btn.dataset.resource;
-      const meta = btn.querySelector(".perf-nav-meta");
-      if (meta) {
-        meta.textContent = values[key] || "--";
-      }
-    });
+    const gpuItems = hostGpuChannels.length
+      ? hostGpuChannels.map((channel) => {
+          const row = hostGpuSummary[channel] || {};
+          return {
+            key: `gpu:${channel}`,
+            label: gpuChannelLabel(channel),
+            meta: `${fmtPct(row.util_pct)} | ${fmtBytes(row.mem_used_bytes)} | ${fmtWatts(row.power_w)}`,
+          };
+        })
+      : [
+          {
+            key: "gpu",
+            label: "GPU",
+            meta: `${fmtPct(summary["system.gpu.util_pct"])} | ${fmtBytes(summary["system.gpu.mem_used_bytes"])} | ${fmtWatts(summary["system.gpu.power_w"])}`,
+          },
+        ];
+
+    const navItems = [
+      { key: "cpu", label: "CPU", meta: cpu },
+      { key: "memory", label: "Memory", meta: memoryText },
+      { key: "disk", label: "Disk", meta: disk },
+      { key: "ethernet", label: "Ethernet", meta: net },
+      ...gpuItems,
+      { key: "pcie", label: "PCIe", meta: pcie },
+    ];
+
+    const validResources = new Set(navItems.map((item) => item.key));
+    if (!validResources.has(state.perfResource)) {
+      state.perfResource = validResources.has("cpu") ? "cpu" : navItems[0]?.key || "cpu";
+    }
+
+    const navRoot = document.querySelector(".perf-nav-list");
+    if (!navRoot) return;
+    navRoot.innerHTML = navItems
+      .map(
+        (item) => `
+          <button class="perf-nav-btn${item.key === state.perfResource ? " active" : ""}" data-resource="${escHtml(item.key)}">
+            <span class="perf-nav-label">${escHtml(item.label)}</span>
+            <span class="perf-nav-meta">${escHtml(item.meta || "--")}</span>
+          </button>
+        `
+      )
+      .join("");
   }
 
   function renderPerformanceCards(cards) {
     document.getElementById("perfSummaryCards").innerHTML = cards.join("");
+  }
+
+  function pcieLaneBytesPerSec(gen) {
+    const g = Number(gen || 0);
+    if (g <= 1) return 250_000_000;
+    if (g === 2) return 500_000_000;
+    if (g === 3) return 984_615_385;
+    if (g === 4) return 1_969_230_769;
+    if (g === 5) return 3_938_461_538;
+    if (g === 6) return 7_876_923_076;
+    const extra = Math.max(0, g - 6);
+    return 7_876_923_076 * (2 ** extra);
+  }
+
+  function pcieMaxBytesByGenWidth(gen, width) {
+    const lanes = Math.max(1, Number(width || 1));
+    return pcieLaneBytesPerSec(gen) * lanes;
+  }
+
+  function renderSparkChart(chart, title, data, yMax, unitKind) {
+    chart.setOption(
+      {
+        animation: false,
+        color: ["#0b6bd3"],
+        title: {
+          text: title,
+          left: 6,
+          top: 2,
+          textStyle: {
+            fontSize: 11,
+            fontWeight: 600,
+            color: "#21324c",
+          },
+        },
+        tooltip: {
+          trigger: "axis",
+          formatter: (params) => {
+            const p = Array.isArray(params) ? params[0] : params;
+            if (!p || !Array.isArray(p.value)) return "";
+            const ts = Number(p.value[0] || 0);
+            const raw = Number(p.value[1] || 0);
+            let val = "";
+            if (unitKind === "util") {
+              val = `${raw.toFixed(1)}%`;
+            } else if (unitKind === "mem_gb") {
+              val = `${(raw / (1024 ** 3)).toFixed(2)} GB`;
+            } else if (unitKind === "pcie_mbps") {
+              val = `${(raw / 1_000_000).toFixed(2)} Mb/s`;
+            } else {
+              val = String(raw);
+            }
+            return `${new Date(ts).toLocaleTimeString()}<br/>${title}: ${val}`;
+          },
+        },
+        grid: { left: 4, right: 4, top: 22, bottom: 6, containLabel: false },
+        xAxis: { type: "time", show: false },
+        yAxis: { type: "value", min: 0, max: yMax > 0 ? yMax : null, show: false },
+        series: [
+          {
+            name: title,
+            type: "line",
+            showSymbol: false,
+            lineStyle: { width: 1.6 },
+            areaStyle: { opacity: 0.08 },
+            data,
+          },
+        ],
+      },
+      true
+    );
+  }
+
+  function renderGpuProfiles(channel) {
+    const root = document.getElementById("gpuProfiles");
+    if (!root) return;
+    const statics = state.systemLatest?.gpu_static_profiles || {};
+    const dynamics = state.systemLatest?.gpu_dynamic_profiles || {};
+    const s = statics[channel] || {};
+    const d = dynamics[channel] || {};
+    if (!channel || (!Object.keys(s).length && !Object.keys(d).length)) {
+      root.classList.add("hidden");
+      root.innerHTML = "";
+      return;
+    }
+
+    const staticRows = [
+      ["Name", fmtValueOrDash(s.name)],
+      ["UUID", fmtValueOrDash(s.uuid)],
+      ["PCI Bus", fmtValueOrDash(s.pci_bus_id)],
+      ["VRAM Total", fmtBytes(Number(s.mem_total_bytes || 0))],
+      ["Power Limit", s.power_limit_w === null || s.power_limit_w === undefined ? "-" : fmtWatts(s.power_limit_w)],
+      ["PCIe Gen Max", `Gen${Number(s.pcie_gen_max || 0).toFixed(0)}`],
+      ["PCIe Width Max", `x${Number(s.pcie_width_max || 0).toFixed(0)}`],
+      ["NUMA", s.numa_node === null || s.numa_node === undefined ? "-" : String(s.numa_node)],
+    ];
+
+    const dynamicRows = [
+      ["Util", fmtPct(d.util_pct)],
+      ["Memory Used", fmtBytes(d.mem_used_bytes)],
+      ["Power", fmtWatts(d.power_w)],
+      ["PCIe Rx", fmtBps(d.pcie_rx_bytes_s)],
+      ["PCIe Tx", fmtBps(d.pcie_tx_bytes_s)],
+      ["PCIe Rate", fmtBps(d.pcie_throughput_bytes_s)],
+      ["PCIe Gen Cur", `Gen${Number(d.pcie_gen_current || 0).toFixed(0)}`],
+      ["PCIe Width Cur", `x${Number(d.pcie_width_current || 0).toFixed(0)}`],
+      ["Sample Time", fmtTime(d.sample_ts_ns)],
+    ];
+
+    const staticHtml = staticRows
+      .map(([k, v]) => `<div class="gpu-prof-row"><span class="k">${escHtml(k)}</span><span class="v mono">${escHtml(v)}</span></div>`)
+      .join("");
+    const dynamicHtml = dynamicRows
+      .map(([k, v]) => `<div class="gpu-prof-row"><span class="k">${escHtml(k)}</span><span class="v mono">${escHtml(v)}</span></div>`)
+      .join("");
+
+    root.classList.remove("hidden");
+    root.innerHTML = `
+      <section class="gpu-prof-box">
+        <div class="gpu-prof-title">Static Profile</div>
+        ${staticHtml}
+      </section>
+      <section class="gpu-prof-box">
+        <div class="gpu-prof-title">Dynamic Profile</div>
+        ${dynamicHtml}
+      </section>
+    `;
+  }
+
+  function applyGpuMiniLayout(enabled) {
+    const stack = document.querySelector(".perf-chart-stack");
+    const boxes = [
+      document.querySelector("#perfChartPrimary")?.parentElement,
+      document.getElementById("perfSecondaryBox"),
+      document.getElementById("perfTertiaryBox"),
+    ].filter(Boolean);
+    const chartsEls = [
+      document.getElementById("perfChartPrimary"),
+      document.getElementById("perfChartSecondary"),
+      document.getElementById("perfChartTertiary"),
+    ].filter(Boolean);
+
+    if (!stack) return;
+    if (enabled) {
+      stack.classList.add("gpu-mini-charts");
+      stack.style.display = "grid";
+      stack.style.gridTemplateColumns = "repeat(3,minmax(0,1fr))";
+      stack.style.gap = "8px";
+      for (const box of boxes) {
+        box.style.minHeight = "140px";
+        box.style.height = "140px";
+      }
+      for (const el of chartsEls) {
+        el.style.minHeight = "140px";
+        el.style.height = "140px";
+      }
+      return;
+    }
+
+    stack.classList.remove("gpu-mini-charts");
+    stack.style.display = "";
+    stack.style.gridTemplateColumns = "";
+    stack.style.gap = "";
+    for (const box of boxes) {
+      box.style.minHeight = "";
+      box.style.height = "";
+    }
+    for (const el of chartsEls) {
+      el.style.minHeight = "";
+      el.style.height = "";
+    }
   }
 
   function renderPerformanceView() {
@@ -307,15 +559,25 @@
     const selectedRun = state.runSnapshot?.run || null;
     const hasRun = Boolean(state.runId && selectedRun);
     const resource = state.perfResource;
-    const resourceLabel = RESOURCE_LABELS[resource] || "CPU";
+    const gpuResource = parseGpuResource(resource);
+    const resourceLabel = gpuResource ? gpuChannelLabel(gpuResource.channel) : RESOURCE_LABELS[resource] || "CPU";
 
     document.getElementById("perfResourceTitle").textContent = resourceLabel;
     document.getElementById("perfResourcePill").textContent = `resource=${resource}`;
     document.getElementById("perfResourceStamp").textContent = `updated=${fmtTime(latestStamp)}`;
 
     const perfSecondaryBox = document.getElementById("perfSecondaryBox");
+    const perfTertiaryBox = document.getElementById("perfTertiaryBox");
+    const gpuProfiles = document.getElementById("gpuProfiles");
+    applyGpuMiniLayout(false);
     perfSecondaryBox.classList.add("hidden");
+    perfTertiaryBox.classList.add("hidden");
+    if (gpuProfiles) {
+      gpuProfiles.classList.add("hidden");
+      gpuProfiles.innerHTML = "";
+    }
     charts.perfSecondary.clear();
+    charts.perfTertiary.clear();
 
     let subtitle = "";
     let notes = "";
@@ -324,8 +586,9 @@
     let yAxis = [{ type: "value", min: 0 }];
     let legend = [];
     let series = [];
+    let chartHandled = false;
 
-    switch (resource) {
+    switch (gpuResource ? "gpu_channel" : resource) {
       case "memory":
         subtitle = hasRun
           ? `Host memory vs monitored run ${state.runId}.`
@@ -391,32 +654,51 @@
           ? "Network IO is plotted from host aggregate counters and monitored run process-tree samples."
           : "Select a run to overlay monitored-process ethernet traffic.";
         break;
+      case "gpu_channel": {
+        const channel = gpuResource.channel;
+        const hostUtilMetric = `system.gpu.${channel}.util_pct`;
+        const hostMemMetric = `system.gpu.${channel}.mem_used_bytes`;
+        const hostPowerMetric = `system.gpu.${channel}.power_w`;
+        const pcieThroughputMetric = `system.pcie.${channel}.throughput_bytes_s`;
+        const st = (state.systemLatest?.gpu_static_profiles || {})[channel] || {};
+        const powerNow = Number(systemSummary[hostPowerMetric] || 0);
+        const memMax = Number(st.mem_total_bytes || 0);
+        const pcieMax = pcieMaxBytesByGenWidth(st.pcie_gen_max, st.pcie_width_max);
+        subtitle = hasRun
+          ? `Host ${resourceLabel} usage and monitored run ${state.runId}.`
+          : `Host ${resourceLabel} usage with no monitored run selected.`;
+        cards = [];
+        perfSecondaryBox.classList.remove("hidden");
+        perfTertiaryBox.classList.remove("hidden");
+        applyGpuMiniLayout(true);
+        renderSparkChart(charts.perfPrimary, `${resourceLabel} Util (${fmtWatts(powerNow)})`, lineData(systemSeries[hostUtilMetric]), 100, "util");
+        renderSparkChart(charts.perfSecondary, `${resourceLabel} Memory`, lineData(systemSeries[hostMemMetric]), memMax, "mem_gb");
+        renderSparkChart(charts.perfTertiary, `${resourceLabel} PCIe`, lineData(systemSeries[pcieThroughputMetric]), pcieMax, "pcie_mbps");
+        renderGpuProfiles(channel);
+        chartHandled = true;
+        notes = `${resourceLabel} trend charts use fixed static ranges (util=100, memory=VRAM max, PCIe=GenMax×WidthMax).`;
+        break;
+      }
       case "gpu":
         subtitle = hasRun
           ? `Host GPU usage and monitored run ${state.runId}.`
           : "Host GPU usage with no monitored run selected.";
-        cards = [
-          cardHtml("Host Util", fmtPct(systemSummary["system.gpu.util_pct"]), "GPU utilization"),
-          cardHtml("Host Mem", fmtBytes(systemSummary["system.gpu.mem_used_bytes"]), "GPU memory used"),
-          cardHtml("Run Util", hasRun ? fmtPct(runSummary.gpu_util_pct) : "No run", hasRun ? "Run aggregate GPU utilization" : "Select a run"),
-          cardHtml("Run Mem", hasRun ? fmtBytes(runSummary.gpu_mem_used_bytes) : "No run", hasRun ? "Run aggregate GPU memory" : "Select a run"),
-          cardHtml("Run Window", hasRun ? `${state.runSnapshot?.run?.sample_count ?? 0} samples` : "No run", hasRun ? `Last sample ${fmtTime(state.latestRunTsNs)}` : `Last system sample ${fmtTime(state.latestSystemTsNs)}`),
-        ];
-        chartTitle = "GPU utilization and memory";
-        legend = ["host util", "run util", "host mem", "run mem"];
-        yAxis = [
-          { type: "value", min: 0, max: 100, axisLabel: { formatter: "{value}%" } },
-          { type: "value", min: 0, axisLabel: { formatter: (value) => fmtBytes(value) } },
-        ];
-        series = [
-          { name: "host util", type: "line", showSymbol: false, data: lineData(systemSeries["system.gpu.util_pct"]), yAxisIndex: 0 },
-          { name: "run util", type: "line", showSymbol: false, data: lineData(runSeries.gpu_util_pct), yAxisIndex: 0 },
-          { name: "host mem", type: "line", showSymbol: false, data: lineData(systemSeries["system.gpu.mem_used_bytes"]), yAxisIndex: 1 },
-          { name: "run mem", type: "line", showSymbol: false, data: lineData(runSeries.gpu_mem_used_bytes), yAxisIndex: 1 },
-        ];
-        notes = hasRun
-          ? "GPU is shown independently from PCIe. Open the PCIe view for bus throughput and per-channel curves."
-          : "Select a run to overlay monitored-run GPU metrics.";
+        cards = [];
+        perfSecondaryBox.classList.remove("hidden");
+        perfTertiaryBox.classList.remove("hidden");
+        applyGpuMiniLayout(true);
+        const statics = state.systemLatest?.gpu_static_profiles || {};
+        const channels = sortedChannelKeys(statics);
+        const totalMemMax = channels.reduce((acc, ch) => acc + Number(statics[ch]?.mem_total_bytes || 0), 0);
+        const totalPcieMax = channels.reduce((acc, ch) => {
+          const s = statics[ch] || {};
+          return acc + pcieMaxBytesByGenWidth(s.pcie_gen_max, s.pcie_width_max);
+        }, 0);
+        renderSparkChart(charts.perfPrimary, `GPU Util (${fmtWatts(systemSummary["system.gpu.power_w"])})`, lineData(systemSeries["system.gpu.util_pct"]), 100, "util");
+        renderSparkChart(charts.perfSecondary, "GPU Memory", lineData(systemSeries["system.gpu.mem_used_bytes"]), totalMemMax, "mem_gb");
+        renderSparkChart(charts.perfTertiary, "GPU PCIe", lineData(systemSeries["system.pcie.throughput_bytes_s"]), totalPcieMax, "pcie_mbps");
+        chartHandled = true;
+        notes = "Aggregate GPU trend charts use static ranges derived from summed hardware maxima.";
         break;
       case "pcie": {
         const hostChannelsSummary = collectHostPcieChannelsFromSummary(systemSummary);
@@ -452,6 +734,7 @@
           const row = hostChannelSeries[channel] || {};
           const rx = row.rx_bytes_s || [];
           const tx = row.tx_bytes_s || [];
+          const tp = row.throughput_bytes_s || [];
           if (rx.length) {
             secondaryLegend.push(`host ${channel} rx`);
             secondarySeries.push({ name: `host ${channel} rx`, type: "line", showSymbol: false, data: lineData(rx) });
@@ -459,6 +742,10 @@
           if (tx.length) {
             secondaryLegend.push(`host ${channel} tx`);
             secondarySeries.push({ name: `host ${channel} tx`, type: "line", showSymbol: false, data: lineData(tx) });
+          }
+          if (tp.length) {
+            secondaryLegend.push(`host ${channel} throughput`);
+            secondarySeries.push({ name: `host ${channel} throughput`, type: "line", showSymbol: false, data: lineData(tp) });
           }
         }
         if (hasRun) {
@@ -483,8 +770,8 @@
         }
 
         notes = hasRun
-          ? "Per-channel PCIe uses NVML GPU-index channels (gpu0/gpu1/...), not physical per-lane counters."
-          : "Select a run to overlay monitored-run PCIe. Channel = GPU endpoint channel via NVML.";
+          ? "Per GPU PCIe now includes static generation plus real-time width and throughput."
+          : "Per GPU PCIe now includes static generation plus real-time width and throughput.";
         break;
       }
       case "cpu":
@@ -514,7 +801,9 @@
     document.getElementById("perfResourceSubtitle").textContent = subtitle;
     renderPerformanceCards(cards);
 
-    renderChart(charts.perfPrimary, chartTitle, series, yAxis, legend);
+    if (!chartHandled) {
+      renderChart(charts.perfPrimary, chartTitle, series, yAxis, legend);
+    }
 
     document.getElementById("perfNotes").textContent = notes;
     scheduleChartResize();
@@ -558,6 +847,48 @@
       },
       true
     );
+  }
+
+  function processGpuChannels() {
+    const raw = state.processCapabilities?.gpu_channels;
+    if (!Array.isArray(raw)) return [];
+    const seen = {};
+    for (const item of raw) {
+      const key = String(item || "").trim();
+      if (!key) continue;
+      seen[key] = 1;
+    }
+    return sortedChannelKeys(seen);
+  }
+
+  function renderProcessGpuHeaders(gpuChannels) {
+    const row = document.querySelector("#tab-processes thead tr");
+    const anchor = document.getElementById("procGpuAnchor");
+    if (!row || !anchor) return;
+
+    row.querySelectorAll("th.proc-gpu-dyn").forEach((th) => th.remove());
+
+    if (!gpuChannels.length) {
+      anchor.classList.remove("hidden");
+      anchor.textContent = anchor.dataset.title || "GPU";
+      return;
+    }
+
+    anchor.classList.add("hidden");
+    const insertBeforeNode = row.querySelector('th[data-sort="mem_rss_bytes"]');
+    for (const channel of gpuChannels) {
+      const utilTh = document.createElement("th");
+      utilTh.className = "proc-gpu-dyn";
+      utilTh.textContent = `${gpuChannelLabel(channel)} Util`;
+      if (insertBeforeNode) row.insertBefore(utilTh, insertBeforeNode);
+      else row.appendChild(utilTh);
+
+      const memTh = document.createElement("th");
+      memTh.className = "proc-gpu-dyn";
+      memTh.textContent = `${gpuChannelLabel(channel)} Mem`;
+      if (insertBeforeNode) row.insertBefore(memTh, insertBeforeNode);
+      else row.appendChild(memTh);
+    }
   }
 
   function sortProcesses(rows) {
@@ -612,26 +943,55 @@
     const rows = sortProcesses(rowsIn || []);
     const tbody = document.getElementById("procTbody");
     tbody.innerHTML = "";
+    const gpuChannels = processGpuChannels();
+    renderProcessGpuHeaders(gpuChannels);
     const counts = state.processCounts || { total: rows.length, monitored: 0, system: rows.length };
     document.getElementById("procCountPill").textContent = `total=${counts.total} monitored=${counts.monitored} system=${counts.system}`;
-    const gpuCap = Boolean(state.processCapabilities?.gpu_proc_mem);
-    document.getElementById("procGpuHint").textContent = gpuCap
+    const gpuMemCap = Boolean(state.processCapabilities?.gpu_proc_mem);
+    const gpuUtilCap = Boolean(state.processCapabilities?.gpu_proc_util);
+    document.getElementById("procGpuHint").textContent = gpuMemCap || gpuUtilCap
       ? ""
-      : "GPU process memory is not exposed by current driver/runtime; shown as N/A.";
+      : "No active GPU process sample right now; values shown as 0.";
 
     const maxCpu = Math.max(100, ...rows.map((p) => Number(p.cpu_pct || 0)));
     const maxMem = Math.max(1, ...rows.map((p) => Number(p.mem_rss_bytes || 0)));
-    const knownGpuVals = rows
-      .filter((p) => Boolean(p.gpu_mem_known))
-      .map((p) => Number(p.gpu_mem_used_bytes || 0));
+    const perGpuMaxMem = {};
+    for (const channel of gpuChannels) {
+      const vals = rows
+        .map((p) => p.gpu_per_device?.[channel])
+        .filter((x) => Boolean(x?.mem_known))
+        .map((x) => Number(x.mem_used_bytes || 0));
+      perGpuMaxMem[channel] = vals.length ? Math.max(1, ...vals) : 1;
+    }
+
+    const knownGpuVals = rows.filter((p) => Boolean(p.gpu_mem_known)).map((p) => Number(p.gpu_mem_used_bytes || 0));
     const maxGpu = knownGpuVals.length ? Math.max(1, ...knownGpuVals) : 1;
 
     for (const p of rows) {
       const tr = document.createElement("tr");
       const gpuVal = Number(p.gpu_mem_used_bytes || 0);
-      const gpuCell = p.gpu_mem_known
+      const gpuCellLegacy = p.gpu_mem_known
         ? meterHtml(fmtBytes(gpuVal), gpuVal / maxGpu)
-        : '<span class="muted">N/A</span>';
+        : meterHtml(fmtBytes(0), 0);
+      let gpuCellsHtml = "";
+      if (gpuChannels.length) {
+        for (const channel of gpuChannels) {
+          const cell = p.gpu_per_device?.[channel] || {};
+          const utilKnown = Boolean(cell.util_known);
+          const memKnown = Boolean(cell.mem_known);
+          const utilPct = Number(cell.util_pct || 0);
+          const memBytes = Number(cell.mem_used_bytes || 0);
+          const utilCell = utilKnown
+            ? meterHtml(fmtPct(utilPct), utilPct / 100.0)
+            : meterHtml(fmtPct(0), 0);
+          const memCell = memKnown
+            ? meterHtml(fmtBytes(memBytes), memBytes / Number(perGpuMaxMem[channel] || 1))
+            : meterHtml(fmtBytes(0), 0);
+          gpuCellsHtml += `<td>${utilCell}</td><td>${memCell}</td>`;
+        }
+      } else {
+        gpuCellsHtml = `<td>${gpuCellLegacy}</td>`;
+      }
       const runLabel = (p.run_ids || []).join(", ");
       const extraNames = Object.keys(p.extra_metrics || {});
       const extraLabel = extraNames.length ? extraNames.join(" | ") : "-";
@@ -645,7 +1005,7 @@
         <td>${escHtml(p.comm || "")}</td>
         <td class="mono">${escHtml(p.pid)}</td>
         <td>${meterHtml(fmtPct(p.cpu_pct), Number(p.cpu_pct || 0) / maxCpu)}</td>
-        <td>${gpuCell}</td>
+        ${gpuCellsHtml}
         <td>${meterHtml(fmtBytes(p.mem_rss_bytes), Number(p.mem_rss_bytes || 0) / maxMem)}</td>
         <td>${escHtml(fmtBps(p.io_read_bps))}</td>
         <td>${escHtml(fmtBps(p.io_write_bps))}</td>
@@ -843,14 +1203,17 @@
       btn.addEventListener("click", () => setTab(btn.dataset.tab));
     });
 
-    document.querySelectorAll(".perf-nav-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
+    const perfNavList = document.querySelector(".perf-nav-list");
+    if (perfNavList) {
+      perfNavList.addEventListener("click", (event) => {
+        const btn = event.target.closest(".perf-nav-btn");
+        if (!btn) return;
         const resource = btn.dataset.resource;
         if (!resource) return;
         state.perfResource = resource;
         renderDashboard();
       });
-    });
+    }
 
     document.getElementById("refreshNowBtn").addEventListener("click", refreshAll);
     document.getElementById("followRunning").addEventListener("change", async (e) => {

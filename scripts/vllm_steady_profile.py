@@ -48,6 +48,7 @@ def main() -> int:
     p.add_argument("--model", default="facebook/opt-125m")
     p.add_argument("--tensor-parallel-size", type=int, default=1)
     p.add_argument("--gpu-memory-utilization", type=float, default=0.35)
+    p.add_argument("--requests-per-iter", type=int, default=1)
     p.add_argument("--warmup-iters", type=int, default=3)
     p.add_argument("--profile-iters", type=int, default=24)
     p.add_argument("--max-tokens", type=int, default=32)
@@ -76,7 +77,8 @@ def main() -> int:
 
     print(
         f"[steady] model={args.model} tp={args.tensor_parallel_size} "
-        f"warmup={args.warmup_iters} profile={args.profile_iters}",
+        f"warmup={args.warmup_iters} profile={args.profile_iters} "
+        f"rpi={args.requests_per_iter}",
         flush=True,
     )
 
@@ -91,20 +93,23 @@ def main() -> int:
         max_tokens=int(args.max_tokens),
     )
 
-    warmup_prompts = _make_prompts(max(1, int(args.warmup_iters)))
+    rpi = max(1, int(args.requests_per_iter))
+    warmup_prompts = _make_prompts(max(1, int(args.warmup_iters) * rpi))
     t0 = time.time()
     for i in range(int(args.warmup_iters)):
-        llm.generate([warmup_prompts[i]], sampling)
+        s = i * rpi
+        llm.generate(warmup_prompts[s : s + rpi], sampling)
     torch.cuda.synchronize()
     print(f"[steady] warmup_done sec={time.time() - t0:.2f}", flush=True)
 
-    profile_prompts = _make_prompts(max(1, int(args.profile_iters)))
+    profile_prompts = _make_prompts(max(1, int(args.profile_iters) * rpi))
     use_profiler_api = str(args.capture_mode) == "cuda-profiler-api"
     if use_profiler_api:
         _profiler_start()
     t1 = time.time()
     for i in range(int(args.profile_iters)):
-        llm.generate([profile_prompts[i]], sampling)
+        s = i * rpi
+        llm.generate(profile_prompts[s : s + rpi], sampling)
     torch.cuda.synchronize()
     if use_profiler_api:
         _profiler_stop()

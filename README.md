@@ -30,6 +30,11 @@ cd /home/flecther/workspace/myprofile/imonitor
 python -m imonitor -- python -c "import time; [time.sleep(0.2) for _ in range(10)]"
 ```
 
+## Related Docs
+
+- Ascend vLLM startup guide: [ASCEND_VLLM_STARTUP.md](./ASCEND_VLLM_STARTUP.md)
+- CANN 8.5 docs crawl guide: [develop/CANN850_DOC_CRAWL.md](./develop/CANN850_DOC_CRAWL.md)
+
 ## Unified Daemon Mode
 
 `imonitord` is the single server process:

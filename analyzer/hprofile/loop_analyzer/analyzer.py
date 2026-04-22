@@ -93,6 +93,42 @@ class RepeatNode:
 Node = Union[AtomNode, RepeatNode]
 
 
+@dataclass(frozen=True)
+class SeqToken:
+    name: str
+    start_ns: int
+    end_ns: int
+
+
+@dataclass
+class MacroDef:
+    name: str
+    level: str
+    tokens: List[str]
+    definition_len: int
+    replace_count: int
+    gain: int
+    first_pos: int
+    windows: List[Tuple[int, int]]
+    defs_covered: int
+
+
+@dataclass
+class TokAtom:
+    name: str
+    key: Tuple[str, str]
+
+
+@dataclass
+class TokRepeat:
+    count: int
+    body: List["TokNode"]
+    key: Tuple[str, int, Tuple[Tuple, ...]]
+
+
+TokNode = Union[TokAtom, TokRepeat]
+
+
 def _normalize_task_type(name: str) -> str:
     return re.sub(r"\s+", " ", (name or "").strip()).upper().replace("_", " ")
 
@@ -104,11 +140,16 @@ def _normalize_task_key(name: str) -> str:
     return s
 
 
-def _canonical_label(label: str) -> str:
+def _canonical_label(label: str, *, category: str) -> str:
     s = (label or "").strip()
     if not s:
         return "UNKNOWN"
-    s = re.sub(r"\d+", "#", s)
+    # Keep operator variants like MatMulV2/MatMulV3 distinguishable for exec.
+    # For non-exec control/comm labels, normalize numbers more aggressively.
+    if category == "exec":
+        s = re.sub(r"\b\d{6,}\b", "#", s)
+    else:
+        s = re.sub(r"\d+", "#", s)
     s = re.sub(r"\s+", " ", s)
     if len(s) > 96:
         s = s[:93] + "..."
@@ -346,6 +387,310 @@ def _is_subseq(needle: Tuple[str, ...], hay: Tuple[str, ...]) -> bool:
     return False
 
 
+def _find_non_overlap_starts(seq: Sequence[str], pattern: Sequence[str]) -> List[int]:
+    if not pattern or len(pattern) > len(seq):
+        return []
+    starts: List[int] = []
+    i = 0
+    n = len(seq)
+    m = len(pattern)
+    while i <= n - m:
+        if tuple(seq[i : i + m]) == tuple(pattern):
+            starts.append(i)
+            i += m
+        else:
+            i += 1
+    return starts
+
+
+def _tok_key(node: TokNode) -> Tuple:
+    if isinstance(node, TokAtom):
+        return node.key
+    return node.key
+
+
+def _compress_token_nodes(
+    nodes: List[TokNode],
+    *,
+    max_period: int,
+    min_repeat_count: int,
+) -> List[TokNode]:
+    current = nodes
+    while True:
+        key_to_id: Dict[Tuple, int] = {}
+        ids: List[int] = []
+        for node in current:
+            k = _tok_key(node)
+            if k not in key_to_id:
+                key_to_id[k] = len(key_to_id) + 1
+            ids.append(key_to_id[k])
+
+        best = _find_best_repeat(ids, max_period=max_period, min_repeat_count=min_repeat_count)
+        if best is None:
+            break
+        i, period, count = best
+        groups = [current[i + r * period : i + (r + 1) * period] for r in range(count)]
+        body = groups[0]
+        key = ("repeat", count, tuple(_tok_key(x) for x in body))
+        rep = TokRepeat(count=count, body=body, key=key)
+        current = current[:i] + [rep] + current[i + count * period :]
+    return current
+
+
+def _compress_token_sequence(
+    tokens: Sequence[str],
+    *,
+    max_period: int = 12,
+    min_repeat_count: int = 2,
+) -> List[TokNode]:
+    nodes: List[TokNode] = [TokAtom(name=t, key=("atom", t)) for t in tokens]
+    return _compress_token_nodes(nodes, max_period=max_period, min_repeat_count=min_repeat_count)
+
+
+def _select_best_candidate(
+    seq: Sequence[str],
+    *,
+    min_len: int,
+    max_len: int,
+    min_count: int,
+) -> Tuple[Tuple[str, ...], List[int], int] | None:
+    n = len(seq)
+    if n < min_len:
+        return None
+    counts: Dict[Tuple[str, ...], int] = {}
+    first_pos: Dict[Tuple[str, ...], int] = {}
+    upper = min(max_len, n)
+    for l in range(min_len, upper + 1):
+        for i in range(0, n - l + 1):
+            pat = tuple(seq[i : i + l])
+            counts[pat] = counts.get(pat, 0) + 1
+            if pat not in first_pos:
+                first_pos[pat] = i
+
+    best: Tuple[Tuple[str, ...], List[int], int] | None = None
+    best_key: Tuple[int, int, int, int] | None = None
+    for pat, c in counts.items():
+        if c < min_count:
+            continue
+        if len(set(pat)) < 2:
+            continue
+
+        starts = _find_non_overlap_starts(seq, pat)
+        k = len(starts)
+        if k < min_count:
+            continue
+        gain = k * (len(pat) - 1) - (len(pat) + 1)
+        if gain <= 0:
+            continue
+
+        key = (len(pat), gain, k, -first_pos.get(pat, 0))
+        if best_key is None or key > best_key:
+            best_key = key
+            best = (pat, starts, gain)
+    return best
+
+
+def _replace_pattern_tokens(
+    seq_tokens: Sequence[SeqToken],
+    pattern: Sequence[str],
+    starts: Sequence[int],
+    macro_name: str,
+) -> Tuple[List[SeqToken], List[Tuple[int, int]]]:
+    m = len(pattern)
+    start_set = set(starts)
+    out: List[SeqToken] = []
+    windows: List[Tuple[int, int]] = []
+    i = 0
+    n = len(seq_tokens)
+    while i < n:
+        if i in start_set and i + m <= n:
+            seg = seq_tokens[i : i + m]
+            s = seg[0].start_ns
+            e = seg[-1].end_ns
+            out.append(SeqToken(name=macro_name, start_ns=s, end_ns=e))
+            windows.append((s, e))
+            i += m
+            continue
+        out.append(seq_tokens[i])
+        i += 1
+    return out, windows
+
+
+def _build_macros(
+    symbol_seq: Sequence[str],
+    atom_windows: Sequence[Tuple[int, int]],
+) -> Tuple[List[str], List[MacroDef], List[MacroDef]]:
+    seq_tokens = [
+        SeqToken(name=s, start_ns=atom_windows[i][0], end_ns=atom_windows[i][1])
+        for i, s in enumerate(symbol_seq)
+    ]
+
+    l1_defs: List[MacroDef] = []
+    macro_id = 1
+    while True:
+        names = [t.name for t in seq_tokens]
+        cand = _select_best_candidate(
+            names,
+            min_len=4,
+            max_len=12,
+            min_count=3,
+        )
+        if cand is None:
+            break
+        pat, starts, gain = cand
+        macro_name = f"M{macro_id}"
+        seq_tokens, windows = _replace_pattern_tokens(seq_tokens, pat, starts, macro_name)
+        l1_defs.append(
+            MacroDef(
+                name=macro_name,
+                level="L1",
+                tokens=list(pat),
+                definition_len=len(pat),
+                replace_count=len(starts),
+                gain=gain,
+                first_pos=starts[0] if starts else -1,
+                windows=windows,
+                defs_covered=0,
+            )
+        )
+        macro_id += 1
+
+    def_map: Dict[str, List[str]] = {d.name: list(d.tokens) for d in l1_defs}
+    l2_defs: List[MacroDef] = []
+    while True:
+        all_names = list(def_map.keys())
+        if not all_names:
+            break
+
+        seq_by_name = {k: list(v) for k, v in def_map.items()}
+        counts: Dict[Tuple[str, ...], int] = {}
+        first_pos: Dict[Tuple[str, ...], int] = {}
+        defs_occ: Dict[Tuple[str, ...], int] = {}
+        occ_by_def: Dict[Tuple[str, ...], Dict[str, List[int]]] = {}
+
+        for dname, toks in seq_by_name.items():
+            n = len(toks)
+            if n < 4:
+                continue
+            for l in range(4, min(10, n) + 1):
+                for i in range(0, n - l + 1):
+                    pat = tuple(toks[i : i + l])
+                    counts[pat] = counts.get(pat, 0) + 1
+                    if pat not in first_pos:
+                        first_pos[pat] = i
+
+            for l in range(4, min(10, n) + 1):
+                seen_pat: set[Tuple[str, ...]] = set()
+                for i in range(0, n - l + 1):
+                    pat = tuple(toks[i : i + l])
+                    if pat in seen_pat:
+                        continue
+                    starts = _find_non_overlap_starts(toks, pat)
+                    if starts:
+                        occ_by_def.setdefault(pat, {})[dname] = starts
+                        seen_pat.add(pat)
+
+        for pat, dmap in occ_by_def.items():
+            defs_occ[pat] = len(dmap)
+
+        best_pat: Tuple[str, ...] | None = None
+        best_gain = 0
+        best_starts_by_def: Dict[str, List[int]] = {}
+        best_key: Tuple[int, int, int, int] | None = None
+        for pat, c in counts.items():
+            if c < 3:
+                continue
+            if len(set(pat)) < 2:
+                continue
+            cover = defs_occ.get(pat, 0)
+            if cover < 2:
+                continue
+            starts_by_def = occ_by_def.get(pat, {})
+            total_occ = sum(len(v) for v in starts_by_def.values())
+            if total_occ < 3:
+                continue
+            gain = total_occ * (len(pat) - 1) - (len(pat) + 1)
+            if gain <= 0:
+                continue
+            key = (len(pat), gain, total_occ, -first_pos.get(pat, 0))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_gain = gain
+                best_pat = pat
+                best_starts_by_def = starts_by_def
+
+        if best_pat is None:
+            break
+
+        macro_name = f"M{macro_id}"
+        for dname in all_names:
+            toks = def_map[dname]
+            starts = best_starts_by_def.get(dname, [])
+            if not starts:
+                continue
+            new_toks: List[str] = []
+            i = 0
+            m = len(best_pat)
+            start_set = set(starts)
+            while i < len(toks):
+                if i in start_set and i + m <= len(toks) and tuple(toks[i : i + m]) == best_pat:
+                    new_toks.append(macro_name)
+                    i += m
+                    continue
+                new_toks.append(toks[i])
+                i += 1
+            def_map[dname] = new_toks
+
+        l2_defs.append(
+            MacroDef(
+                name=macro_name,
+                level="L2",
+                tokens=list(best_pat),
+                definition_len=len(best_pat),
+                replace_count=sum(len(v) for v in best_starts_by_def.values()),
+                gain=best_gain,
+                first_pos=min((v[0] for v in best_starts_by_def.values() if v), default=-1),
+                windows=[],
+                defs_covered=len(best_starts_by_def),
+            )
+        )
+        macro_id += 1
+
+    # apply L2 substitutions onto L1 definitions for final rendering
+    for d in l1_defs:
+        if d.name in def_map:
+            d.tokens = list(def_map[d.name])
+    all_defs = l1_defs + l2_defs
+
+    # remove alias macros like Mx -> My to keep dictionary readable.
+    alias: Dict[str, str] = {}
+    for d in all_defs:
+        if len(d.tokens) == 1 and d.tokens[0].startswith("M") and d.tokens[0] != d.name:
+            alias[d.name] = d.tokens[0]
+
+    def _resolve_alias(name: str) -> str:
+        seen: set[str] = set()
+        cur = name
+        while cur in alias and cur not in seen:
+            seen.add(cur)
+            cur = alias[cur]
+        return cur
+
+    final_expr_tokens = [_resolve_alias(t.name) for t in seq_tokens]
+    kept: List[MacroDef] = []
+    for d in all_defs:
+        if d.name in alias:
+            continue
+        d.tokens = [_resolve_alias(t) for t in d.tokens]
+        d.definition_len = len(d.tokens)
+        kept.append(d)
+
+    kept.sort(key=lambda x: int(x.name[1:]) if x.name[1:].isdigit() else 10**9)
+    l1_kept = [d for d in kept if d.level == "L1"]
+    l2_kept = [d for d in kept if d.level == "L2"]
+    return final_expr_tokens, l1_kept, l2_kept
+
+
 def _mine_meta_patterns(
     symbol_seq: Sequence[str],
     *,
@@ -436,6 +781,8 @@ def _build_readable_markdown(
     compression_ratio_used: float,
     compression_ratio_original: float,
     expression_pretty: str,
+    macro_expression: str,
+    macro_defs: Sequence[Dict[str, object]],
     symbol_rows: Sequence[Dict[str, object]],
     meta_rows: Sequence[Dict[str, object]],
 ) -> str:
@@ -457,6 +804,24 @@ def _build_readable_markdown(
     lines.append("```")
     lines.append(expression_pretty)
     lines.append("```")
+    lines.append("")
+    lines.append("## Macro Expression")
+    lines.append("")
+    lines.append("```")
+    lines.append(macro_expression)
+    lines.append("```")
+    lines.append("")
+    lines.append("## Macros")
+    lines.append("")
+    if macro_defs:
+        lines.append("| name | level | definition | len | replace_count | gain | defs_covered |")
+        lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: |")
+        for r in macro_defs:
+            lines.append(
+                f"| {r.get('name','')} | {r.get('level','')} | {r.get('definition','')} | {int(r.get('definition_len',0))} | {int(r.get('replace_count',0))} | {int(r.get('gain',0))} | {int(r.get('defs_covered',0))} |"
+            )
+    else:
+        lines.append("No macro selected (all candidates have non-positive net gain).")
     lines.append("")
     lines.append("## Symbols")
     lines.append("")
@@ -480,6 +845,212 @@ def _build_readable_markdown(
         lines.append("No frequent meta pattern found with current threshold.")
     lines.append("")
     return "\n".join(lines)
+
+
+def _tok_nodes_to_ast_seq(
+    nodes: Sequence[TokNode],
+    *,
+    symbol_meta_map: Dict[str, Dict[str, object]],
+    macro_names: set[str],
+) -> Dict[str, object]:
+    items: List[Dict[str, object]] = []
+    for i, n in enumerate(nodes, start=1):
+        if isinstance(n, TokRepeat):
+            items.append(
+                {
+                    "ord": i,
+                    "node": {
+                        "type": "Repeat",
+                        "count": n.count,
+                        "body": _tok_nodes_to_ast_seq(
+                            n.body,
+                            symbol_meta_map=symbol_meta_map,
+                            macro_names=macro_names,
+                        ),
+                    },
+                }
+            )
+            continue
+
+        if n.name in macro_names:
+            items.append(
+                {
+                    "ord": i,
+                    "node": {"type": "MacroRef", "name": n.name},
+                }
+            )
+            continue
+
+        meta = symbol_meta_map.get(n.name, {})
+        items.append(
+            {
+                "ord": i,
+                "node": {
+                    "type": "Atom",
+                    "symbol": n.name,
+                    "op_label": meta.get("label", n.name),
+                    "category": meta.get("category", ""),
+                    "task_type": meta.get("task_type", ""),
+                    "window_count": int(meta.get("window_count", 0)),
+                },
+            }
+        )
+    return {"type": "Seq", "items": items}
+
+
+def _render_ast_lines(
+    node: Dict[str, object],
+    *,
+    out: List[str],
+    indent: str = "",
+    prefix: str = "",
+) -> None:
+    t = str(node.get("type", ""))
+    if t == "Seq":
+        out.append(f"{indent}{prefix}Seq")
+        items = node.get("items", [])
+        if isinstance(items, list):
+            for idx, it in enumerate(items, start=1):
+                if not isinstance(it, dict):
+                    continue
+                child = it.get("node", {})
+                if not isinstance(child, dict):
+                    continue
+                _render_ast_lines(
+                    child,
+                    out=out,
+                    indent=indent + "  ",
+                    prefix=f"[{idx}] ",
+                )
+        return
+
+    if t == "Repeat":
+        out.append(f"{indent}{prefix}Repeat x{int(node.get('count', 1))}")
+        body = node.get("body", {})
+        if isinstance(body, dict):
+            _render_ast_lines(body, out=out, indent=indent + "  ", prefix="body: ")
+        return
+
+    if t == "MacroRef":
+        out.append(f"{indent}{prefix}MacroRef {node.get('name', '')}")
+        return
+
+    if t == "Atom":
+        out.append(
+            f"{indent}{prefix}Atom {node.get('symbol','')} | {node.get('op_label','')} | {node.get('category','')}"
+        )
+        return
+
+    out.append(f"{indent}{prefix}{t}")
+
+
+def _build_tree_v2(
+    *,
+    db_path: Path,
+    device_id: int,
+    stream_id: int,
+    final_expr_tokens: Sequence[str],
+    macro_rows: Sequence[Dict[str, object]],
+    macro_def_tokens: Dict[str, List[str]],
+    symbol_rows: Sequence[Dict[str, object]],
+) -> Tuple[Dict[str, object], str]:
+    symbol_meta_map = {str(r.get("symbol", "")): dict(r) for r in symbol_rows}
+    macro_names = set(macro_def_tokens.keys())
+
+    root_nodes = _compress_token_sequence(final_expr_tokens, max_period=12, min_repeat_count=2)
+    root_ast = _tok_nodes_to_ast_seq(
+        root_nodes,
+        symbol_meta_map=symbol_meta_map,
+        macro_names=macro_names,
+    )
+
+    macro_defs_ast: List[Dict[str, object]] = []
+    for row in macro_rows:
+        name = str(row.get("name", ""))
+        toks = list(macro_def_tokens.get(name, []))
+        def_nodes = _compress_token_sequence(toks, max_period=12, min_repeat_count=2)
+        def_ast = _tok_nodes_to_ast_seq(
+            def_nodes,
+            symbol_meta_map=symbol_meta_map,
+            macro_names=macro_names,
+        )
+        macro_defs_ast.append(
+            {
+                "name": name,
+                "level": row.get("level", ""),
+                "gain": int(row.get("gain", 0)),
+                "replace_count": int(row.get("replace_count", 0)),
+                "definition": row.get("definition", ""),
+                "tree": def_ast,
+            }
+        )
+
+    def _collect_macro_refs(ast_node: Dict[str, object], out: Dict[str, int]) -> None:
+        t = str(ast_node.get("type", ""))
+        if t == "MacroRef":
+            name = str(ast_node.get("name", ""))
+            if name:
+                out[name] = out.get(name, 0) + 1
+            return
+        if t == "Seq":
+            items = ast_node.get("items", [])
+            if isinstance(items, list):
+                for it in items:
+                    if isinstance(it, dict):
+                        child = it.get("node", {})
+                        if isinstance(child, dict):
+                            _collect_macro_refs(child, out)
+            return
+        if t == "Repeat":
+            body = ast_node.get("body", {})
+            if isinstance(body, dict):
+                _collect_macro_refs(body, out)
+
+    root_macro_ref_counts: Dict[str, int] = {}
+    _collect_macro_refs(root_ast, root_macro_ref_counts)
+    macro_table = {str(m.get("name", "")): m for m in macro_defs_ast if m.get("name")}
+
+    payload = {
+        "schema_version": "loop_tree_v2",
+        "db": str(db_path),
+        "device_id": device_id,
+        "stream_id": stream_id,
+        "root": root_ast,
+        "macro_defs": macro_defs_ast,
+        "macro_table": macro_table,
+        "root_macro_ref_counts": root_macro_ref_counts,
+        "symbol_table": list(symbol_rows),
+    }
+
+    lines: List[str] = []
+    lines.append("# Loop Tree (v2)")
+    lines.append("")
+    lines.append(f"- db: `{db_path}`")
+    lines.append(f"- device_id: `{device_id}`")
+    lines.append(f"- stream_id: `{stream_id}`")
+    lines.append("")
+    lines.append("## Root")
+    lines.append("")
+    lines.append("```")
+    _render_ast_lines(root_ast, out=lines)
+    lines.append("```")
+    lines.append("")
+    lines.append("## Macro Subtrees")
+    lines.append("")
+    if macro_defs_ast:
+        for m in macro_defs_ast:
+            lines.append(
+                f"### {m['name']} ({m['level']}, gain={m['gain']}, replace_count={m['replace_count']})"
+            )
+            lines.append("")
+            lines.append("```")
+            _render_ast_lines(m["tree"], out=lines)
+            lines.append("```")
+            lines.append("")
+    else:
+        lines.append("No macro definitions.")
+        lines.append("")
+    return payload, "\n".join(lines)
 
 
 def _node_to_dict(node: Node) -> Dict[str, object]:
@@ -544,15 +1115,23 @@ def _load_string_ids(conn: sqlite3.Connection) -> Dict[int, str]:
     return out
 
 
-def _load_global_task_names(conn: sqlite3.Connection) -> Tuple[Dict[int, str], Dict[int, str]]:
+def _load_global_task_names(
+    conn: sqlite3.Connection,
+) -> Tuple[Dict[int, str], Dict[int, str], Dict[int, str]]:
     compute: Dict[int, str] = {}
+    compute_optype: Dict[int, str] = {}
     if conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='COMPUTE_TASK_INFO'"
     ).fetchone():
-        for gid, name_id in conn.execute("SELECT globalTaskId, name FROM COMPUTE_TASK_INFO"):
+        for gid, name_id, op_type_id in conn.execute(
+            "SELECT globalTaskId, name, opType FROM COMPUTE_TASK_INFO"
+        ):
             if gid is None or name_id is None:
-                continue
-            compute[int(gid)] = str(name_id)
+                pass
+            else:
+                compute[int(gid)] = str(name_id)
+            if gid is not None and op_type_id is not None:
+                compute_optype[int(gid)] = str(op_type_id)
 
     comm: Dict[int, str] = {}
     if conn.execute(
@@ -564,14 +1143,28 @@ def _load_global_task_names(conn: sqlite3.Connection) -> Tuple[Dict[int, str], D
             if gid is None or name_id is None:
                 continue
             comm[int(gid)] = str(name_id)
-    return compute, comm
+    return compute, compute_optype, comm
+
+
+def _load_comm_connection_ids(conn: sqlite3.Connection) -> set[int]:
+    out: set[int] = set()
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='COMMUNICATION_OP'"
+    ).fetchone():
+        return out
+    for (cid,) in conn.execute("SELECT DISTINCT connectionId FROM COMMUNICATION_OP"):
+        if cid is None:
+            continue
+        out.add(int(cid))
+    return out
 
 
 def _load_stream_events(db_path: Path) -> Dict[Tuple[int, int], List[StreamEvent]]:
     out: Dict[Tuple[int, int], List[StreamEvent]] = {}
     with sqlite3.connect(str(db_path)) as conn:
         sid_to_value = _load_string_ids(conn)
-        compute_name_ids, comm_name_ids = _load_global_task_names(conn)
+        compute_name_ids, compute_optype_ids, comm_name_ids = _load_global_task_names(conn)
+        comm_connection_ids = _load_comm_connection_ids(conn)
 
         query = (
             "SELECT startNs, endNs, deviceId, streamId, taskId, globalTaskId, connectionId, taskType "
@@ -594,6 +1187,8 @@ def _load_stream_events(db_path: Path) -> Dict[Tuple[int, int], List[StreamEvent
                 continue
 
             category = _classify_task(task_type_norm)
+            if category == "exec" and connection_id in comm_connection_ids:
+                category = "comm"
             if category not in {"wait", "comm", "exec"}:
                 continue
 
@@ -605,6 +1200,13 @@ def _load_stream_events(db_path: Path) -> Dict[Tuple[int, int], List[StreamEvent
                 except ValueError:
                     label_raw = ""
             if not label_raw:
+                compute_op_type_id = compute_optype_ids.get(global_task_id)
+                if compute_op_type_id is not None:
+                    try:
+                        label_raw = sid_to_value.get(int(compute_op_type_id), "")
+                    except ValueError:
+                        label_raw = ""
+            if not label_raw:
                 comm_name_id = comm_name_ids.get(global_task_id)
                 if comm_name_id is not None:
                     try:
@@ -613,7 +1215,7 @@ def _load_stream_events(db_path: Path) -> Dict[Tuple[int, int], List[StreamEvent
                         label_raw = ""
             if not label_raw:
                 label_raw = task_type_norm
-            label = _canonical_label(label_raw)
+            label = _canonical_label(label_raw, category=category)
 
             key = (device_id, stream_id)
             out.setdefault(key, []).append(
@@ -718,6 +1320,7 @@ def run_loop_analyzer(
 
             nodes, symbol_meta = _events_to_nodes(trimmed)
             symbol_seq = [n.symbol for n in nodes if isinstance(n, AtomNode)]
+            atom_windows = [(n.anchor_start_ns, n.anchor_end_ns) for n in nodes if isinstance(n, AtomNode)]
             compressed_nodes, passes = _compress_nodes(
                 nodes,
                 max_period=cfg.max_period,
@@ -727,6 +1330,31 @@ def run_loop_analyzer(
             expression = _render_expression(compressed_nodes)
             expression_pretty = _render_nodes_pretty(compressed_nodes)
             expression_pretty_wrapped = _wrap_expression(expression_pretty)
+            macro_expr_tokens, l1_macro_defs, l2_macro_defs = _build_macros(symbol_seq, atom_windows)
+            macro_expression = _wrap_expression(" ".join(_rle_tokens(macro_expr_tokens)))
+            macro_defs = l1_macro_defs + l2_macro_defs
+            macro_rows: List[Dict[str, object]] = []
+            macro_json_rows: List[Dict[str, object]] = []
+            macro_def_tokens: Dict[str, List[str]] = {}
+            for d in macro_defs:
+                defn = " ".join(_rle_tokens(d.tokens))
+                row = {
+                    "name": d.name,
+                    "level": d.level,
+                    "definition": defn,
+                    "definition_len": d.definition_len,
+                    "replace_count": d.replace_count,
+                    "gain": d.gain,
+                    "defs_covered": d.defs_covered,
+                    "first_pos": d.first_pos,
+                    "window_count": len(d.windows),
+                }
+                macro_rows.append(row)
+                jr = dict(row)
+                jr["tokens"] = list(d.tokens)
+                jr["windows"] = [[s, e] for s, e in d.windows]
+                macro_json_rows.append(jr)
+                macro_def_tokens[d.name] = list(d.tokens)
             atom_stats = _collect_atom_stats(compressed_nodes)
             meta_rows = _mine_meta_patterns(
                 symbol_seq,
@@ -744,13 +1372,19 @@ def run_loop_analyzer(
             file_stem = f"db{db_idx:02d}_rank{stream_rank:02d}_dev{device_id}_stream{stream_id}"
             expr_path = out_dir / f"{file_stem}.expr.txt"
             expr_pretty_path = out_dir / f"{file_stem}.expr.pretty.txt"
+            expr_macro_path = out_dir / f"{file_stem}.expr.macro.txt"
             json_path = out_dir / f"{file_stem}.tree.json"
             symbol_path = out_dir / f"{file_stem}.symbols.csv"
             meta_pattern_path = out_dir / f"{file_stem}.meta_patterns.csv"
+            macro_path = out_dir / f"{file_stem}.macros.csv"
+            macro_json_path = out_dir / f"{file_stem}.macros.json"
             readable_path = out_dir / f"{file_stem}.readable.md"
+            tree_v2_path = out_dir / f"{file_stem}.tree.v2.json"
+            tree_readable_path = out_dir / f"{file_stem}.tree.readable.md"
 
             expr_path.write_text(expression + "\n", encoding="utf-8")
             expr_pretty_path.write_text(expression_pretty_wrapped + "\n", encoding="utf-8")
+            expr_macro_path.write_text(macro_expression + "\n", encoding="utf-8")
             payload = {
                 "db": str(db_path),
                 "device_id": device_id,
@@ -765,13 +1399,28 @@ def run_loop_analyzer(
                 "compression_ratio_original": round(original_events / max(len(compressed_nodes), 1), 6),
                 "expression": expression,
                 "expression_pretty": expression_pretty,
+                "macro_expression": " ".join(_rle_tokens(macro_expr_tokens)),
                 "root": [_node_to_dict(n) for n in compressed_nodes],
                 "symbol_legend": symbol_rows,
                 "meta_patterns": meta_rows,
+                "macro_defs": macro_json_rows,
             }
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             _write_csv(symbol_path, symbol_rows)
             _write_csv(meta_pattern_path, meta_rows)
+            _write_csv(macro_path, macro_rows)
+            macro_json_path.write_text(json.dumps({"macros": macro_json_rows}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            tree_v2, tree_readable = _build_tree_v2(
+                db_path=db_path,
+                device_id=device_id,
+                stream_id=stream_id,
+                final_expr_tokens=macro_expr_tokens,
+                macro_rows=macro_rows,
+                macro_def_tokens=macro_def_tokens,
+                symbol_rows=symbol_rows,
+            )
+            tree_v2_path.write_text(json.dumps(tree_v2, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            tree_readable_path.write_text(tree_readable + "\n", encoding="utf-8")
             readable = _build_readable_markdown(
                 db_path=db_path,
                 device_id=device_id,
@@ -783,6 +1432,8 @@ def run_loop_analyzer(
                 compression_ratio_used=round(used_events / max(len(compressed_nodes), 1), 6),
                 compression_ratio_original=round(original_events / max(len(compressed_nodes), 1), 6),
                 expression_pretty=expression_pretty_wrapped,
+                macro_expression=macro_expression,
+                macro_defs=macro_rows,
                 symbol_rows=symbol_rows,
                 meta_rows=meta_rows,
             )
@@ -806,10 +1457,18 @@ def run_loop_analyzer(
                     "expression_preview": expression_pretty_wrapped[:240],
                     "expr_file": str(expr_path.relative_to(out_dir)),
                     "expr_pretty_file": str(expr_pretty_path.relative_to(out_dir)),
+                    "expr_macro_file": str(expr_macro_path.relative_to(out_dir)),
                     "tree_file": str(json_path.relative_to(out_dir)),
+                    "tree_v2_file": str(tree_v2_path.relative_to(out_dir)),
                     "symbols_file": str(symbol_path.relative_to(out_dir)),
                     "meta_patterns_file": str(meta_pattern_path.relative_to(out_dir)),
+                    "macros_file": str(macro_path.relative_to(out_dir)),
+                    "macros_json_file": str(macro_json_path.relative_to(out_dir)),
+                    "macro_count": len(macro_rows),
+                    "macro_expression_tokens": len(macro_expr_tokens),
+                    "macro_compression_ratio_used": round(used_events / max(len(macro_expr_tokens), 1), 6),
                     "readable_file": str(readable_path.relative_to(out_dir)),
+                    "tree_readable_file": str(tree_readable_path.relative_to(out_dir)),
                 }
             )
             stream_file_count += 1

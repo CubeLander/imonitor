@@ -1,0 +1,62 @@
+version: v2
+
+target:
+  runtime: docker_exec
+  container: train8-docker
+  entry_script: msprof-docs-processed/ascend/run_msprof_vllm_smoke.sh
+  entry_args: ""
+  entry_cwd: ""
+  command: ""
+  program: ""
+  script: ""
+  args: ""
+  env:
+    SMOKE_TP: 8
+    SMOKE_PP: 1
+    SMOKE_MAX_MODEL_LEN: 4096
+    SMOKE_MAX_TOKENS: 256
+    SMOKE_BATCH_SIZE: 8
+    SMOKE_ROUNDS: 10
+    SMOKE_TRUST_REMOTE_CODE: off
+    SMOKE_HF_OVERRIDES_JSON: ""
+    SMOKE_TEMPERATURE: 0.0
+    SMOKE_PROMPT: "You are a production assistant. Summarize this request in one concise sentence with key entities preserved."
+  visible_devices: "0,1,2,3,4,5,6,7"
+  model_path: /data/models/models--Qwen--Qwen3-32B/snapshots/9216db5781bf21249d130ec9da846c4624c16137
+  keep_remote: false
+
+msprof:
+  timeout_seconds: 7200
+  ascendcl: on
+  runtime_api: on
+  task_time: l1
+  hccl: on
+  aicpu: off
+  ai_core: off
+  model_execution: off
+  aic_mode: sample-based
+  aic_freq: 50
+  aic_metrics: PipeUtilization
+  type: db
+  sys_hardware_mem: off
+  sys_hardware_mem_freq: 20
+  l2: off
+  ge_api: off
+  task_memory: off
+
+profiler:
+  out_root: analyzer/out
+  run_tag: auto
+  process_after_collect: true
+  raw_input_dir: ""
+  process_out_dir: ""
+  topn_streams: 50
+  topn_edges: 100
+  topn_loops: 100
+  topn_kernels: 50
+  legacy_script: ""
+  reuse_legacy_out: ""
+
+# Deprecated compatibility block (remove after migration).
+collect:
+  preset: ""

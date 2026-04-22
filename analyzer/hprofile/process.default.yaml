@@ -1,0 +1,18 @@
+# hprofile process-only config
+# Usage:
+#   cp analyzer/hprofile/process.default.yaml ./hprofile.process.yaml
+#   python3 -m analyzer.hprofile process
+version: v2
+
+profiler:
+  # Required for process-only unless run_tag is provided with out_root.
+  raw_input_dir: ""
+  # Optional; default is <raw_input_dir>/../hprofile_processed
+  process_out_dir: ""
+
+  topn_streams: 30
+  topn_edges: 50
+  topn_loops: 50
+  topn_kernels: 30
+  legacy_script: ""
+  reuse_legacy_out: ""

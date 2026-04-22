@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKLOAD_PY="$ROOT_DIR/workload_vllm_8npu.py"
-OUT_BASE="$ROOT_DIR/out/msprof_smoke"
-RUN_ID="$(date +%Y%m%d_%H%M%S)"
+OUT_BASE="${OUT_BASE:-$ROOT_DIR/out/msprof_smoke}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 LOCAL_OUT="$OUT_BASE/$RUN_ID"
 
 CONTAINER_NAME="${CONTAINER_NAME:-}"
@@ -14,8 +14,16 @@ SMOKE_PP="${SMOKE_PP:-1}"
 SMOKE_VISIBLE_DEVICES="${SMOKE_VISIBLE_DEVICES:-}"
 SMOKE_MAX_MODEL_LEN="${SMOKE_MAX_MODEL_LEN:-1024}"
 SMOKE_MAX_TOKENS="${SMOKE_MAX_TOKENS:-32}"
+SMOKE_BATCH_SIZE="${SMOKE_BATCH_SIZE:-1}"
+SMOKE_ROUNDS="${SMOKE_ROUNDS:-1}"
+SMOKE_TRUST_REMOTE_CODE="${SMOKE_TRUST_REMOTE_CODE:-off}"
+SMOKE_HF_OVERRIDES_JSON="${SMOKE_HF_OVERRIDES_JSON:-}"
 SMOKE_TEMPERATURE="${SMOKE_TEMPERATURE:-0.0}"
 SMOKE_PROMPT="${SMOKE_PROMPT:-Explain the purpose of msprof in one sentence.}"
+TARGET_PROGRAM="${TARGET_PROGRAM:-}"
+TARGET_SCRIPT="${TARGET_SCRIPT:-}"
+TARGET_ARGS="${TARGET_ARGS:-}"
+TARGET_COMMAND="${TARGET_COMMAND:-}"
 MSPROF_TIMEOUT_SECONDS="${MSPROF_TIMEOUT_SECONDS:-1200}"
 KEEP_REMOTE="${KEEP_REMOTE:-0}"
 
@@ -29,6 +37,7 @@ MSPROF_MODEL_EXECUTION="${MSPROF_MODEL_EXECUTION:-on}"
 MSPROF_AIC_MODE="${MSPROF_AIC_MODE:-sample-based}"
 MSPROF_AIC_FREQ="${MSPROF_AIC_FREQ:-50}"
 MSPROF_AIC_METRICS="${MSPROF_AIC_METRICS:-PipeUtilization}"
+MSPROF_TYPE="${MSPROF_TYPE:-db}"
 MSPROF_SYS_HARDWARE_MEM="${MSPROF_SYS_HARDWARE_MEM:-on}"
 MSPROF_SYS_HARDWARE_MEM_FREQ="${MSPROF_SYS_HARDWARE_MEM_FREQ:-20}"
 MSPROF_L2="${MSPROF_L2:-on}"
@@ -112,10 +121,26 @@ if [ -n "${SMOKE_VISIBLE_DEVICES:-}" ]; then
   export NPU_VISIBLE_DEVICES="$SMOKE_VISIBLE_DEVICES"
 fi
 
+if [ -z "${TARGET_PROGRAM:-}" ]; then
+  TARGET_PROGRAM="python3"
+fi
+
+if [ -z "${TARGET_SCRIPT:-}" ]; then
+  TARGET_SCRIPT="$REMOTE_ROOT/workload_vllm_8npu.py"
+fi
+
+case "$TARGET_SCRIPT" in
+  /*) ;;
+  *) TARGET_SCRIPT="$REMOTE_ROOT/$TARGET_SCRIPT" ;;
+esac
+export TARGET_PROGRAM TARGET_SCRIPT TARGET_ARGS
+
 workload_wrapper="$REMOTE_ROOT/workload_wrapper.sh"
-cat >"$workload_wrapper" <<EOF
+cat >"$workload_wrapper" <<'EOF'
 #!/usr/bin/env sh
 set -eu
+REMOTE_OUT="$REMOTE_ROOT/out"
+mkdir -p "$REMOTE_OUT"
 export VLLM_PLUGINS=ascend
 export ASCEND_RT_VISIBLE_DEVICES="$SMOKE_VISIBLE_DEVICES"
 export ASCEND_VISIBLE_DEVICES="$SMOKE_VISIBLE_DEVICES"
@@ -125,10 +150,28 @@ export SMOKE_TP="$SMOKE_TP"
 export SMOKE_PP="$SMOKE_PP"
 export SMOKE_MAX_MODEL_LEN="$SMOKE_MAX_MODEL_LEN"
 export SMOKE_MAX_TOKENS="$SMOKE_MAX_TOKENS"
+export SMOKE_BATCH_SIZE="$SMOKE_BATCH_SIZE"
+export SMOKE_ROUNDS="$SMOKE_ROUNDS"
+export SMOKE_TRUST_REMOTE_CODE="$SMOKE_TRUST_REMOTE_CODE"
+export SMOKE_HF_OVERRIDES_JSON="$SMOKE_HF_OVERRIDES_JSON"
 export SMOKE_TEMPERATURE="$SMOKE_TEMPERATURE"
 export SMOKE_PROMPT="$SMOKE_PROMPT"
 export SMOKE_OUTPUT_JSON="$REMOTE_OUT/workload_result.json"
-exec python3 "$REMOTE_ROOT/workload_vllm_8npu.py"
+export TARGET_PROGRAM="$TARGET_PROGRAM"
+export TARGET_SCRIPT="$TARGET_SCRIPT"
+export TARGET_ARGS="$TARGET_ARGS"
+export TARGET_COMMAND="$TARGET_COMMAND"
+
+if [ -n "${TARGET_COMMAND:-}" ]; then
+  exec /bin/sh -lc "$TARGET_COMMAND"
+fi
+
+if [ -n "${TARGET_ARGS:-}" ]; then
+  # shellcheck disable=SC2086
+  exec "$TARGET_PROGRAM" "$TARGET_SCRIPT" $TARGET_ARGS
+fi
+
+exec "$TARGET_PROGRAM" "$TARGET_SCRIPT"
 EOF
 chmod +x "$workload_wrapper"
 
@@ -146,6 +189,7 @@ timeout "${MSPROF_TIMEOUT_SECONDS}s" \
   --aic-mode="$MSPROF_AIC_MODE" \
   --aic-freq="$MSPROF_AIC_FREQ" \
   --aic-metrics="$MSPROF_AIC_METRICS" \
+  --type="$MSPROF_TYPE" \
   --sys-hardware-mem="$MSPROF_SYS_HARDWARE_MEM" \
   --sys-hardware-mem-freq="$MSPROF_SYS_HARDWARE_MEM_FREQ" \
   --l2="$MSPROF_L2" \
@@ -163,6 +207,18 @@ find "$REMOTE_OUT" -type f -path "*/mindstudio_profiler_output/*" >"$REMOTE_OUT/
   echo "model=$MODEL_PATH"
   echo "tp=$SMOKE_TP"
   echo "pp=$SMOKE_PP"
+  echo "max_model_len=$SMOKE_MAX_MODEL_LEN"
+  echo "max_tokens=$SMOKE_MAX_TOKENS"
+  echo "batch_size=$SMOKE_BATCH_SIZE"
+  echo "rounds=$SMOKE_ROUNDS"
+  echo "trust_remote_code=$SMOKE_TRUST_REMOTE_CODE"
+  echo "hf_overrides_json=$SMOKE_HF_OVERRIDES_JSON"
+  echo "temperature=$SMOKE_TEMPERATURE"
+  echo "prompt=$SMOKE_PROMPT"
+  echo "target_program=$TARGET_PROGRAM"
+  echo "target_script=$TARGET_SCRIPT"
+  echo "target_args=$TARGET_ARGS"
+  echo "target_command=$TARGET_COMMAND"
   echo "visible_devices=$SMOKE_VISIBLE_DEVICES"
   echo "timeout_seconds=$MSPROF_TIMEOUT_SECONDS"
   echo "ascendcl=$MSPROF_ASCENDCL"
@@ -175,6 +231,7 @@ find "$REMOTE_OUT" -type f -path "*/mindstudio_profiler_output/*" >"$REMOTE_OUT/
   echo "aic_mode=$MSPROF_AIC_MODE"
   echo "aic_freq=$MSPROF_AIC_FREQ"
   echo "aic_metrics=$MSPROF_AIC_METRICS"
+  echo "type=$MSPROF_TYPE"
   echo "sys_hardware_mem=$MSPROF_SYS_HARDWARE_MEM"
   echo "sys_hardware_mem_freq=$MSPROF_SYS_HARDWARE_MEM_FREQ"
   echo "l2=$MSPROF_L2"
@@ -200,8 +257,16 @@ docker exec \
   -e SMOKE_VISIBLE_DEVICES="$SMOKE_VISIBLE_DEVICES" \
   -e SMOKE_MAX_MODEL_LEN="$SMOKE_MAX_MODEL_LEN" \
   -e SMOKE_MAX_TOKENS="$SMOKE_MAX_TOKENS" \
+  -e SMOKE_BATCH_SIZE="$SMOKE_BATCH_SIZE" \
+  -e SMOKE_ROUNDS="$SMOKE_ROUNDS" \
+  -e SMOKE_TRUST_REMOTE_CODE="$SMOKE_TRUST_REMOTE_CODE" \
+  -e SMOKE_HF_OVERRIDES_JSON="$SMOKE_HF_OVERRIDES_JSON" \
   -e SMOKE_TEMPERATURE="$SMOKE_TEMPERATURE" \
   -e SMOKE_PROMPT="$SMOKE_PROMPT" \
+  -e TARGET_PROGRAM="$TARGET_PROGRAM" \
+  -e TARGET_SCRIPT="$TARGET_SCRIPT" \
+  -e TARGET_ARGS="$TARGET_ARGS" \
+  -e TARGET_COMMAND="$TARGET_COMMAND" \
   -e MSPROF_TIMEOUT_SECONDS="$MSPROF_TIMEOUT_SECONDS" \
   -e MSPROF_ASCENDCL="$MSPROF_ASCENDCL" \
   -e MSPROF_RUNTIME_API="$MSPROF_RUNTIME_API" \
@@ -213,6 +278,7 @@ docker exec \
   -e MSPROF_AIC_MODE="$MSPROF_AIC_MODE" \
   -e MSPROF_AIC_FREQ="$MSPROF_AIC_FREQ" \
   -e MSPROF_AIC_METRICS="$MSPROF_AIC_METRICS" \
+  -e MSPROF_TYPE="$MSPROF_TYPE" \
   -e MSPROF_SYS_HARDWARE_MEM="$MSPROF_SYS_HARDWARE_MEM" \
   -e MSPROF_SYS_HARDWARE_MEM_FREQ="$MSPROF_SYS_HARDWARE_MEM_FREQ" \
   -e MSPROF_L2="$MSPROF_L2" \

@@ -26,6 +26,45 @@ SMOKE_VISIBLE_DEVICES=4,5 SMOKE_TP=2 MSPROF_TIMEOUT_SECONDS=1200 CONTAINER_NAME=
   /home/user8/workspace/imonitor/msprof-docs-processed/ascend/run_msprof_vllm_smoke.sh
 ```
 
+说明：如仅需 analyzer 消费的原始库，建议加 `MSPROF_TYPE=db`（默认已是 `db`），可显著减少导出时间与体积。
+
+目标入口可独立指定（与 msprof 开关解耦）：
+
+```bash
+TARGET_PROGRAM=python3 TARGET_SCRIPT=/path/in/container/target.py TARGET_ARGS="--foo bar" \
+  /home/user8/workspace/imonitor/msprof-docs-processed/ascend/run_msprof_vllm_smoke.sh
+```
+
+也支持直接给完整命令：
+
+```bash
+TARGET_COMMAND="python3 /path/in/container/target.py --foo bar" \
+  /home/user8/workspace/imonitor/msprof-docs-processed/ascend/run_msprof_vllm_smoke.sh
+```
+
+可显式指定输出根和 run_id（用于固定目录布局）：
+
+```bash
+OUT_BASE=/some/out/root RUN_ID=msprof_raw \
+  /home/user8/workspace/imonitor/msprof-docs-processed/ascend/run_msprof_vllm_smoke.sh
+```
+
+### 2.1 稳定导出 2x2（推荐先用）
+
+这个脚本固定 `tp=2, pp=2`，并关闭重型采集项，优先保证 `msprof_*.db` 稳定导出：
+
+```bash
+CONTAINER_NAME=vllm-cyj \
+  /home/user8/workspace/imonitor/msprof-docs-processed/ascend/run_msprof_vllm_2x2_stable.sh
+```
+
+可选参数示例（手动指定 4 张卡）：
+
+```bash
+CONTAINER_NAME=vllm-cyj SMOKE_VISIBLE_DEVICES=4,5,6,7 \
+  /home/user8/workspace/imonitor/msprof-docs-processed/ascend/run_msprof_vllm_2x2_stable.sh
+```
+
 ## 3. 生成总览报告
 
 ```bash

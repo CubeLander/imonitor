@@ -1,0 +1,68 @@
+# hprofile v2 default config
+# Usage:
+#   cp analyzer/hprofile/profile.default.yaml ./hprofile.yaml
+#   python3 -m analyzer.hprofile
+version: v2
+
+target:
+  # runtime: docker_exec | local
+  runtime: docker_exec
+  container: ""
+  # Collect entry script (optional). Empty means built-in collector.
+  entry_script: ""
+  entry_args: ""
+  entry_cwd: ""
+  # Target launch options (choose one style):
+  # 1) full command
+  command: ""
+  # 2) program + script + args
+  program: ""
+  script: ""
+  args: ""
+  # Optional environment map passed to collect entry.
+  # Workload-specific knobs should be set here (e.g. VLLM_SMOKE_*).
+  env:
+    VLLM_SMOKE_MODEL: ""
+  visible_devices: ""
+  keep_remote: false
+
+msprof:
+  timeout_seconds: 1800
+  ascendcl: on
+  runtime_api: on
+  task_time: l1
+  hccl: on
+  aicpu: off
+  ai_core: off
+  model_execution: off
+  aic_mode: sample-based
+  aic_freq: 50
+  aic_metrics: PipeUtilization
+  type: db
+  sys_hardware_mem: off
+  sys_hardware_mem_freq: 20
+  l2: off
+  ge_api: off
+  task_memory: off
+
+profiler:
+  out_root: analyzer/out
+  run_tag: auto
+  process_after_collect: true
+  # process-only mode fields:
+  raw_input_dir: ""
+  process_out_dir: ""
+  # hprofile processing controls:
+  topn_streams: 30
+  topn_edges: 50
+  topn_loops: 50
+  topn_kernels: 30
+  # Optional: reuse or replace legacy stage analyzer behavior.
+  legacy_script: ""
+  reuse_legacy_out: ""
+
+# Compatibility bridge (deprecated):
+# collect:
+#   preset: msprof_vllm_2x2_stable
+#   out_root: analyzer/out
+#   run_tag: 20260420_120000

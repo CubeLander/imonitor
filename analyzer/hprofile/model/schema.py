@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+SCHEMA_VERSION = "v0.1"
+QUALITY_SCHEMA_VERSION = "v0.1"
+LINEAGE_SCHEMA_VERSION = "v0.1"
+MANIFEST_SCHEMA_VERSION = "v0.1"

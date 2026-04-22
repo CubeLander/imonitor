@@ -48,6 +48,17 @@ def build_lineage(run_id: str) -> Dict[str, object]:
                 "notes": "coverage_us ranks candidate importance",
             },
             {
+                "id": "compressed_loop.stream_queue_trace",
+                "name": "Greedy compressed stream trace with exact windows",
+                "source": [
+                    "derived/loop_analyzer/summary.csv",
+                    "derived/loop_analyzer/db*_rank*_dev*_stream*.tree.json",
+                    "derived/loop_analyzer/db*_rank*_dev*_stream*.expr.txt",
+                ],
+                "formula": "greedy tandem-repeat compression over key TASK events by stream",
+                "notes": "v0-exact keeps full time windows for every repeat index and nested child node",
+            },
+            {
                 "id": "quality.alignment",
                 "name": "Cross-DB time alignment",
                 "source": ["msprof_*.db/TASK(startNs,endNs)", "derived/quality_report.json"],

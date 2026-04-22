@@ -20,6 +20,7 @@ from .export.quality import build_quality_report
 from .export.unified_json import build_unified_profile
 from .io.discover import discover_msprof_dbs, inventory_raw_layout, resolve_run_id
 from .io.sqlite_reader import build_alignment_summary, summarize_db_windows
+from .loop_analyzer import LoopAnalyzerConfig, run_loop_analyzer
 from .web.renderer import render_web
 
 
@@ -386,6 +387,26 @@ def _run_process_pipeline(
         config_dir=config_dir,
     )
 
+    loop_cfg_raw = _as_dict(profiler_cfg.get("loop_analyzer"))
+    loop_enabled = _as_bool(loop_cfg_raw.get("enabled"), True)
+    loop_meta: Dict[str, Any] = {}
+    if loop_enabled:
+        loop_out_dir = layout["derived_dir"] / "loop_analyzer"
+        loop_cfg = LoopAnalyzerConfig(
+            top_streams_per_db=_as_int(loop_cfg_raw.get("top_streams_per_db"), 3),
+            max_events_per_stream=_as_int(loop_cfg_raw.get("max_events_per_stream"), 20000),
+            max_period=_as_int(loop_cfg_raw.get("max_period"), 12),
+            min_repeat_count=_as_int(loop_cfg_raw.get("min_repeat_count"), 2),
+        )
+        print(
+            "[hprofile] run loop analyzer:",
+            f"top_streams_per_db={loop_cfg.top_streams_per_db}",
+            f"max_events_per_stream={loop_cfg.max_events_per_stream}",
+            f"max_period={loop_cfg.max_period}",
+            f"min_repeat_count={loop_cfg.min_repeat_count}",
+        )
+        loop_meta = run_loop_analyzer(run_dir=raw_dir, out_dir=loop_out_dir, config=loop_cfg)
+
     cfg = HProfileConfig(
         run_dir=raw_dir,
         bundle_dir=processed_dir,
@@ -420,6 +441,7 @@ def _run_process_pipeline(
         run_dir=cfg.run_dir,
         generated_at=generated_at,
         legacy_out_dir=cfg.legacy_out_dir,
+        loop_analyzer_meta=loop_meta,
         quality_report=quality_report,
         topn_streams=cfg.topn_streams,
         topn_edges=cfg.topn_edges,

@@ -12,17 +12,18 @@ target:
   args: ""
   env:
     VLLM_SMOKE_MODEL: /data/models/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
-    VLLM_SMOKE_TP: 2
-    VLLM_SMOKE_PP: 2
+    VLLM_SMOKE_TP: 4
+    VLLM_SMOKE_PP: 1
     VLLM_SMOKE_MAX_MODEL_LEN: 1024
     VLLM_SMOKE_MAX_TOKENS: 32
-    VLLM_SMOKE_BATCH_SIZE: 1
-    VLLM_SMOKE_ROUNDS: 1
+    VLLM_SMOKE_BATCH_SIZE: 8
+    VLLM_SMOKE_ROUNDS: 64
+    VLLM_SMOKE_DISPATCH_MODE: dense
     VLLM_SMOKE_TEMPERATURE: 0.0
     VLLM_SMOKE_DTYPE: bfloat16
     VLLM_SMOKE_TRUST_REMOTE_CODE: off
     VLLM_SMOKE_PROMPT: "Explain the purpose of msprof in one sentence."
-  visible_devices: "0,1,2,3,4,5,6,7"
+  visible_devices: "0,1,4,5"
   keep_remote: false
 
 msprof:
@@ -37,7 +38,7 @@ msprof:
   aic_mode: sample-based
   aic_freq: 50
   aic_metrics: PipeUtilization
-  type: db
+  type: text
   sys_hardware_mem: off
   sys_hardware_mem_freq: 20
   l2: off

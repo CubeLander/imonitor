@@ -57,6 +57,12 @@ profiler:
   topn_edges: 50
   topn_loops: 50
   topn_kernels: 30
+  loop_analyzer:
+    enabled: true
+    top_streams_per_db: 3
+    max_events_per_stream: 20000
+    max_period: 12
+    min_repeat_count: 2
   # Optional: reuse or replace legacy stage analyzer behavior.
   legacy_script: ""
   reuse_legacy_out: ""

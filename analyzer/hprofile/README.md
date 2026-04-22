@@ -57,8 +57,21 @@ analyzer/scripts/run_hprofile_smoke.sh
 - `derived/unified_profile.json`
 - `derived/lineage.json`
 - `derived/quality_report.json`
+- `derived/loop_analyzer/*`（stream trace 压缩表达式与带时间窗的树）
 - `web/index.html + assets/*`
 - `manifest.json`
+
+`loop_analyzer` 默认开启，可在 `profiler.loop_analyzer` 调整：
+
+```yaml
+profiler:
+  loop_analyzer:
+    enabled: true
+    top_streams_per_db: 3
+    max_events_per_stream: 20000
+    max_period: 12
+    min_repeat_count: 2
+```
 
 ## 兼容策略
 

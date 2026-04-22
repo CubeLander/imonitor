@@ -72,6 +72,7 @@ def build_unified_profile(
     run_dir: Path,
     generated_at: str,
     legacy_out_dir: Path,
+    loop_analyzer_meta: Dict[str, object],
     quality_report: Dict[str, object],
     topn_streams: int,
     topn_edges: int,
@@ -89,6 +90,11 @@ def build_unified_profile(
     task_type_rows = _read_csv(legacy_out_dir / "task_type_breakdown.csv", limit=topn_streams)
     kernel_rows = _read_csv(legacy_out_dir / "top_kernels.csv", limit=topn_kernels)
     loop_rows = _load_loop_candidates(legacy_out_dir / "loop_candidates.csv", limit=topn_loops)
+    loop_analyzer_dir = legacy_out_dir.parent / "loop_analyzer"
+    compressed_loop_summary = _read_csv(loop_analyzer_dir / "summary.csv", limit=topn_streams)
+    compressed_loop_meta = _read_json(loop_analyzer_dir / "meta.json", {})
+    if loop_analyzer_meta:
+        compressed_loop_meta.update(loop_analyzer_meta)
 
     rules_text = ""
     rules_path = legacy_out_dir / "classification_rules.md"
@@ -135,6 +141,10 @@ def build_unified_profile(
         "micro_loops": {
             "best": loop_best,
             "candidates": loop_rows,
+        },
+        "compressed_loops": {
+            "meta": compressed_loop_meta,
+            "top_streams": compressed_loop_summary,
         },
         "rules": {
             "classification_rules_md": rules_text,

@@ -69,6 +69,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rounds", type=int, default=_env_int("VLLM_SMOKE_ROUNDS", "SMOKE_ROUNDS", default=1))
     parser.add_argument(
+        "--dispatch-mode",
+        choices=("round", "dense"),
+        default=_env_str("VLLM_SMOKE_DISPATCH_MODE", "SMOKE_DISPATCH_MODE", default="round"),
+        help="round: call generate once per round; dense: submit all requests in one generate call",
+    )
+    parser.add_argument(
         "--temperature",
         type=float,
         default=_env_float("VLLM_SMOKE_TEMPERATURE", "SMOKE_TEMPERATURE", default=0.0),
@@ -118,6 +124,7 @@ def main() -> int:
     print(f"[workload] model={args.model}")
     print(f"[workload] tp={args.tp} pp={args.pp} dtype={args.dtype}")
     print(f"[workload] rounds={args.rounds} batch_size={args.batch_size} max_tokens={args.max_tokens}")
+    print(f"[workload] dispatch_mode={args.dispatch_mode}")
 
     total_start = time.time()
     init_seconds = 0.0
@@ -144,10 +151,12 @@ def main() -> int:
         round_latencies: list[float] = []
         generated_tokens_estimate = 0
         first_output_text = ""
+        total_requests = args.rounds * args.batch_size
 
         gen_start = time.time()
-        for r in range(args.rounds):
-            prompts = [f"{args.prompt}\\n[round={r} request={i}]" for i in range(args.batch_size)]
+        if args.dispatch_mode == "dense":
+            # Put request id at the prompt prefix to avoid shared-prefix reuse.
+            prompts = [f"[request={i}]\\n{args.prompt}" for i in range(total_requests)]
             t0 = time.time()
             outputs = llm.generate(prompts, sampling)
             round_latencies.append(time.time() - t0)
@@ -159,10 +168,23 @@ def main() -> int:
                 if item.outputs:
                     text = item.outputs[0].text or ""
                     generated_tokens_estimate += len(text.split())
+        else:
+            for r in range(args.rounds):
+                prompts = [f"{args.prompt}\\n[round={r} request={i}]" for i in range(args.batch_size)]
+                t0 = time.time()
+                outputs = llm.generate(prompts, sampling)
+                round_latencies.append(time.time() - t0)
+
+                if outputs and outputs[0].outputs:
+                    first_output_text = outputs[0].outputs[0].text or ""
+
+                for item in outputs:
+                    if item.outputs:
+                        text = item.outputs[0].text or ""
+                        generated_tokens_estimate += len(text.split())
 
         generate_seconds = time.time() - gen_start
         total_seconds = time.time() - total_start
-        total_requests = args.rounds * args.batch_size
 
         payload = {
             "status": "ok",
@@ -174,6 +196,7 @@ def main() -> int:
             "max_tokens": args.max_tokens,
             "batch_size": args.batch_size,
             "rounds": args.rounds,
+            "dispatch_mode": args.dispatch_mode,
             "temperature": args.temperature,
             "prompt": args.prompt,
             "trust_remote_code": args.trust_remote_code,
@@ -209,6 +232,7 @@ def main() -> int:
             "max_tokens": args.max_tokens,
             "batch_size": args.batch_size,
             "rounds": args.rounds,
+            "dispatch_mode": args.dispatch_mode,
             "temperature": args.temperature,
             "prompt": args.prompt,
             "trust_remote_code": args.trust_remote_code,

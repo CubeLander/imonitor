@@ -73,6 +73,55 @@ profiler:
     min_repeat_count: 2
 ```
 
+## Loop Tree 离线增广（不重跑 workload）
+
+基于现有 `derived/loop_analyzer/*.tree.v2.json` 直接做节点级聚合统计：
+
+```bash
+python3 -m analyzer.hprofile.loop_analyzer.augment \
+  analyzer/out/<run_tag>/hprofile_processed/derived/loop_analyzer/dbXX_rankXX_devX_streamXXXX.tree.v2.json
+```
+
+目录批量处理时，可先按工作量筛选重点 stream：
+
+```bash
+python3 -m analyzer.hprofile.loop_analyzer.augment \
+  analyzer/out/<run_tag>/hprofile_processed/derived/loop_analyzer \
+  --top-streams-by-total-dur 8
+```
+
+可选源码注释文件（用于覆盖自动推断的源码锚点）：
+
+```bash
+python3 -m analyzer.hprofile.loop_analyzer.augment \
+  analyzer/out/<run_tag>/hprofile_processed/derived/loop_analyzer/dbXX_rankXX_devX_streamXXXX.tree.v2.json \
+  --source-notes /path/to/source_notes.json
+```
+
+`source_notes.json` 结构示例：
+
+```json
+{
+  "task_label": {
+    "AddRmsNormBias": "vllm/model_executor/layers/layernorm.py:120"
+  },
+  "node": {
+    "Root[73].body[1]": "vllm/worker/model_runner.py:450"
+  }
+}
+```
+
+输出（同目录）：
+
+- `*.node_perf_core.csv`：通用聚合指标（按节点路径）
+- `*.node_perf_detail.jsonl`：按节点类型的专属指标
+- `*.node_instances.csv`：节点实例窗口明细
+- `*.macro_summary.csv`：macro 级别平均性能统计
+- `*.macro_steps.csv`：macro 内部步骤纵向聚合
+- `*.tree.readable.augmented.md`：带关键指标的增广报告
+
+其中增广报告和 CSV 均包含 `source_deepest` 字段，表示当前能追溯到的 Python/框架侧调用锚点（自动推断，可被 `source_notes` 覆盖）；对容器（Block）节点，会优先做子节点锚点的公共祖先（LCA）归并。
+
 ## 兼容策略
 
 - `collect.preset` 仍保留兼容（deprecated），内部会映射到通用入口脚本与默认参数。

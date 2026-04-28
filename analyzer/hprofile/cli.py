@@ -20,6 +20,7 @@ from .export.quality import build_quality_report
 from .export.unified_json import build_unified_profile
 from .io.discover import discover_msprof_dbs, inventory_raw_layout, resolve_run_id
 from .io.sqlite_reader import build_alignment_summary, summarize_db_windows
+from .integrated_profile import build_machine_timeline
 from .loop_analyzer import LoopAnalyzerConfig, run_loop_analyzer
 from .web.renderer import render_web
 
@@ -378,6 +379,21 @@ def _run_process_pipeline(
     raw_dir = raw_dir.resolve()
     processed_dir = processed_dir.resolve()
     layout = _ensure_processed_layout(processed_dir)
+    run_id = _derive_run_id(raw_dir)
+
+    integrated_cfg = _as_dict(profiler_cfg.get("integrated_profile"))
+    integrated_enabled = _as_bool(integrated_cfg.get("enabled"), True)
+    integrated_meta: Dict[str, Any] = {}
+    if integrated_enabled:
+        integrated_out_dir = layout["derived_dir"] / "integrated_profile"
+        if integrated_out_dir.exists():
+            shutil.rmtree(integrated_out_dir)
+        print("[hprofile] build machine-level timeline:", str(integrated_out_dir))
+        integrated_meta = build_machine_timeline(
+            run_dir=raw_dir,
+            out_dir=integrated_out_dir,
+            run_id=run_id,
+        )
 
     legacy_out_dir = _prepare_legacy_outputs(
         run_dir=raw_dir,
@@ -434,7 +450,6 @@ def _run_process_pipeline(
         ],
     )
 
-    run_id = _derive_run_id(raw_dir)
     generated_at = _utc_now()
     unified = build_unified_profile(
         run_id=run_id,
@@ -474,6 +489,8 @@ def _run_process_pipeline(
     print(f"[hprofile] run_id={run_id}")
     print(f"[hprofile] processed_dir={cfg.bundle_dir}")
     print("[hprofile] derived: unified_profile.json, lineage.json, quality_report.json")
+    if integrated_meta:
+        print("[hprofile] integrated_profile:", integrated_meta.get("trace_file", ""))
     print("[hprofile] web: index.html + assets (static embedded data)")
     return cfg.bundle_dir
 

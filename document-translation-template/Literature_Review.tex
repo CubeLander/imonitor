@@ -1,0 +1,79 @@
+\documentclass[supercite]{Experimental_Report}
+
+\title{GPU/NPU Profiling 与 vLLM 推理性能分析文献综述（初稿）}
+\school{计算机科学与技术学院}
+\author{（待填写）}
+\classnum{（待填写）}
+\stunum{（待填写）}
+\instructor{（待填写）}
+\date{2026年4月23日}
+
+\usepackage{zhnumber}
+\renewcommand\thesection{\zhnum{section}}
+\renewcommand \thesubsection {\arabic{subsection}}
+
+\begin{document}
+
+\maketitle
+\clearpage
+\pagenumbering{Roman}
+\pagenumbering{arabic}
+
+\begin{abstract}
+本文围绕“GPU/NPU profiling + vLLM 分布式推理性能分析 + trace 压缩与源码归因”展开文献综述。现有研究在三条线上形成了较强基础：其一是以 Roofline、硬件计数器和分层瓶颈分析为代表的 profiling 方法学；其二是以 vLLM、Orca、Sarathi-Serve、DistServe 为代表的 LLM serving 系统优化；其三是以 ScalaTrace 与 HPCToolkit 为代表的 trace 压缩与归因框架。本文在梳理方法脉络的同时，明确当前方案在异构硬件一致性、跨阶段归因可解释性和低开销在线分析方面的不足，并给出后续研究切入点。
+\end{abstract}
+
+\section{研究背景与问题定义}
+
+大模型推理服务正从离线批处理走向在线、低时延、强约束的生产环境，性能目标从“单纯吞吐最大化”转为“吞吐、首 token 时延、token 间时延、SLO 达标率”的多目标平衡。相应地，性能分析问题也从单算子计时扩展为“调度行为 + 内存管理 + 通信路径 + 端到端归因”的系统问题。以 TPU 数据中心评测工作为代表的早期研究已经说明，硬件能力本身并不能直接决定服务质量，关键在于负载结构与资源调度是否匹配\cite{jouppi2017tpu}。
+
+在 LLM serving 领域，vLLM 通过 PagedAttention 将 KV cache 管理问题显式化，推动了“内存碎片/分配策略”进入一等性能指标集合\cite{kwon2023pagedattention}。Orca、Sarathi-Serve、DistServe 进一步证明调度粒度与阶段解耦策略会显著影响端到端服务质量\cite{yu2022orca,agrawal2024sarathi,zhong2024distserve}。因此，本文将问题定义为：如何建立一条能覆盖 GPU/NPU 异构执行、prefill/decode 阶段行为和源码级责任定位的 profiling 与归因技术路线。
+
+本综述关注的核心输出不是单次 benchmark 结果，而是可复用的分析框架。该框架应满足三点：第一，指标口径在 GPU 与 NPU 间可对齐；第二，trace 体量可控且信息保真；第三，归因结果可回溯到源码或算子图语义层。后续章节将围绕这三点，分别讨论 profiling、serving、trace 压缩与源码归因方法。
+
+\section{GPU/NPU Profiling 技术路线}
+
+GPU/NPU profiling 的基础逻辑是“先建上界，再做分层定位”。Roofline 模型提供了算力与带宽两类上界，能快速判断瓶颈属于计算受限还是访存受限\cite{roofline2009}。在深度学习场景下，分层 Roofline 与时间感知 Roofline 将内存层级、数据精度与运行时因素纳入统一分析框架，使分析结果更贴近真实推理流水线\cite{yang2020hierarchicalroofline,wang2020timebasedroofline}。
+
+面向 NPU 的 profiling 还需额外关注指令/数据通路与片上存储组织。TPU 数据中心分析表明，矩阵核心、片上缓冲与工作负载形态之间存在强耦合关系，且不同网络结构对硬件资源的压力模式并不一致\cite{jouppi2017tpu}。这对 Ascend 场景有直接启发：NPU profiling 不能只看总利用率，需要引入分阶段、分算子、分通路的层次化指标。
+
+从工具链角度看，近年来工作已开始尝试把 CPU 与 GPU 的剖析结果统一到同一分析视角。HPCToolkit 在 GPU 加速应用上的扩展说明，“主机侧调度 + 设备侧执行”的联合归因是可行的\cite{zhou2021hpctoolkitgpu}。据此，本文建议的技术路线是：以 Roofline 定位瓶颈类型，以时序 trace 确认瓶颈触发条件，再以源码归因解释责任边界。
+
+\section{vLLM 与分布式推理性能分析}
+
+vLLM 的关键贡献在于把 KV cache 内存管理从“实现细节”提升为“系统级优化对象”。PagedAttention 通过分页化管理降低碎片和过度预留，使连续批处理与复杂采样策略下的内存效率显著提升\cite{kwon2023pagedattention}。这意味着 LLM serving profiling 需要把显存分配行为、请求队列行为和 kernel 执行行为进行关联观测，而非孤立评估。
+
+Orca 提出的 iteration-level scheduling 与 selective batching 显示，生成式模型的请求由多轮迭代构成，若仍采用粗粒度请求调度，会产生明显排队与批次尾部拖累\cite{yu2022orca}。Sarathi-Serve 在此基础上进一步强调吞吐与时延折中的稳定性，特别是 token 间时延与尾延迟指标\cite{agrawal2024sarathi}。这类工作共同说明：调度策略是服务性能的主导变量之一。
+
+DistServe 将 prefill 与 decode 显式解耦，针对不同阶段采用差异化资源与并行策略，在 SLO 约束下优化 goodput\cite{zhong2024distserve}。该思路与本文目标高度一致，因为它天然要求阶段化 trace、跨阶段通信开销记录与阶段级归因。若缺乏这些观测能力，系统很难解释“为何某次请求违反 TTFT/TPOT 约束”。
+
+此外，多租户场景下 LoRA 适配器并发会进一步放大内存与调度复杂度。S-LoRA 与 vAttention 分别从多适配器管理与非 PagedAttention 路径出发，展示了 serving 设计空间仍在快速扩展\cite{sheng2024slora,prabhu2025vattention}。这提示我们在构建评测基线时应覆盖单模型、LoRA 多租户和异构内存策略三类负载。
+
+\section{Trace 压缩与模式挖掘}
+
+在大规模推理系统中，trace 数据量通常随并发度和观测粒度快速膨胀。ScalaTrace 证明了在并行程序通信场景中，可以通过结构化压缩获得接近常量级增长的 trace 表示，同时保留重放与分析能力\cite{noeth2009scalatrace}。这为推理系统提供了重要方法论：压缩目标不应只是“更小”，而应是“可分析性不丢失”。
+
+后续工作进一步提出可扩展通信 trace 压缩方案，并强调无损压缩在性能建模与未来系统预测中的价值\cite{krishnamoorthy2010scalabletrace}。对应到 LLM serving，prefill/decode 阶段切换、批次形成、KV 迁移和等待事件都属于高频结构化事件，具备模式化压缩潜力。
+
+因此，本文建议采用“两段式 trace 处理”：第一段做结构抽取与字典化编码，保留事件因果与上下文；第二段做参数压缩与采样降噪，控制存储与离线分析成本。该路线与后文源码归因结合后，可形成“压缩 trace 仍可还原责任链”的闭环。
+
+\section{源码映射与归因}
+
+仅有时间线和计数器无法回答“性能损失由谁负责”。HPCToolkit 的核心思想是将采样数据归并到调用上下文树（CCT），并结合静态结构恢复把成本映射到函数、循环和源码行\cite{adhianto2010hpctoolkit}。这种“上下文归因”比平面 profile 更适合处理内联、异步执行和多线程并发。
+
+在 GPU 加速与异构计算场景中，归因难点变为跨设备语义对齐：主机侧调度函数、运行时库调用、设备侧 kernel 与 stream 事件之间如何建立稳定映射。HPCToolkit 的 GPU 扩展给出了可操作方向，即在统一语义树中融合 CPU/GPU 事件，再进行 postmortem 归并分析\cite{zhou2021hpctoolkitgpu,adhianto2024refininghpctoolkit}。
+
+对本课题而言，源码归因模块应至少支持三层映射：请求级（用户请求与 SLO）、算子级（prefill/decode 与关键 kernel）、源码级（框架函数与自定义算子实现）。只有形成这三层联动，profiling 结果才能从“可观测”走向“可优化”。
+
+\section{现有不足与本文切入点}
+
+综合现有文献，可以看到三类共性不足。第一，GPU 与 NPU 工具链和指标口径仍不统一，导致跨硬件横向比较困难。第二，许多 serving 论文强调系统吞吐增益，但缺少可复用、可迁移的归因数据模型。第三，trace 压缩与归因常被分开讨论，缺乏“压缩后仍可解释”的一体化设计\cite{kwon2023pagedattention,zhong2024distserve,noeth2009scalatrace,adhianto2010hpctoolkit}。
+
+据此，本文建议的切入点是：构建一个面向 vLLM/分布式推理的异构 profiling 管线，统一采集 GPU/NPU 执行事件、调度事件与内存事件；在该管线上实现阶段化（prefill/decode）trace 压缩；最终通过 CCT 风格模型完成源码级归因。该切入点既继承了已有工作的成熟方法，又补上了跨阶段、跨设备、跨语义层的连接缺口。
+
+在研究路径上，短期应先完成指标与事件模型定义，中期完成压缩与归因原型，长期再做在线低开销部署与稳定性评估。通过这一分层推进方式，可降低系统复杂度并提高实验结论的可解释性与可复现性。
+
+\bibliographystyle{gbt7714-hust}
+\bibliography{Literature_Review}
+
+\end{document}

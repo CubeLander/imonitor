@@ -1,0 +1,57 @@
+run_id: run_001
+
+objective:
+  primary_metric: throughput_tok_s
+  maximize: true
+  target_gain_pct: 10.0
+
+hardware:
+  device_type: ascend_npu
+  device_count: 4
+  topology: "0,1,4,5"
+  visible_devices: "0,1,4,5"
+
+model:
+  model_path: /data/models/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218
+  tp_size: 4
+  dp_size: 1
+  pp_size: 1
+
+repos:
+  vllm_repo: /home/user8/workspace/imonitor/vllm
+  vllm_ascend_repo: /abs/path/to/vllm-ascend
+  branch: main
+
+profiler_runtime:
+  mode: docker_exec
+  container: train8-docker
+  hprofile_config: analyzer/config/hprofile.yaml
+
+commands:
+  preflight_command: "python3 skills/vllm-npu-autotune/scripts/preflight_check.py --run-spec {run_dir}/run_spec.yaml --repo-root /home/user8/workspace/imonitor --out {run_dir}/artifacts/env_manifest.json"
+  smoke_command: "python3 analyzer/workload/vllm_distributed_smoke.py --model {model_path} --tp 4 --pp 1 --rounds 1 --batch-size 1 --max-tokens 8 --dispatch-mode dense --output-json {run_dir}/reports/smoke.json"
+  benchmark_command: "vllm bench serve --help"
+  profiler_smoke_command: "analyzer/scripts/run_hprofile_smoke.sh"
+  profiler_command: "python3 -m analyzer.hprofile process hprofile.process.yaml"
+
+workload:
+  profile_name: sharegpt_realistic
+  dataset_name: sharegpt
+  dataset_path: /abs/path/to/ShareGPT_V3_unfiltered_cleaned_split.json
+  request_count: 512
+  random_seed: 42
+  prefix_cache_mode: realistic
+  max_concurrency: 32
+
+gates:
+  min_gain_pct: 2.0
+  significance_z: 1.5
+  max_p95_multiplier: 1.02
+  max_error_rate: 0.001
+
+workflow:
+  repeats_per_baseline: 3
+  repeats_per_trial: 3
+  ablation_interval_accepts: 3
+  max_consecutive_rejects: 5
+  allow_mock_when_blocked: true

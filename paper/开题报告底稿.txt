@@ -1,0 +1,250 @@
+本科生毕业设计（论文）开题报告
+
+
+题　　目：面向 Ascend NPU 分布式推理的 Profiling 信号聚合分析与优化验证方法设计
+
+
+
+院    系	计算机科学与技术
+专业班级	计科2202
+姓    名	田景远
+学    号	U202015328
+指导教师	张书豪
+
+
+2026年4月
+
+
+1 课题来源、目的及意义
+
+1.1 课题来源
+
+随着大模型推理任务从单机离线运行走向多卡分布式在线服务，推理系统的性能瓶颈不再只由单个算子耗时决定，而是同时受到请求调度、KV cache 管理、通信同步、运行时开销和源码实现细节影响。以 Ascend NPU 与 vLLM 分布式推理为例，一次 profiling 采集通常会产生多个 `PROF_*` 目录、多个 `msprof_*.db` 数据库、host/device 原始切片、导出 CSV/JSON 以及采集日志。原始数据中包含大量 task、stream、event wait、event record、HCCL 通信和算子执行信息，信息密度高但结构复杂。
+
+在实际调优过程中，开发者常常需要人工查看 MindStudio、Perfetto 或导出的统计表，通过经验观察时间线中的重复形状、长时间等待、通信与计算交替等模式，再回到框架源码中寻找可能的优化点。这种方式存在三个问题：第一，原始 profiling 事件数量巨大，直接阅读成本高；第二，原始信号与优化动作之间存在语义缺口，task 级事件不能直接对应到源码函数或通信路径；第三，单次 benchmark 容易受到噪声影响，缺少稳定的验证 gate ,容易把偶然波动误判为优化收益。
+
+本课题来源于实际 Ascend/vLLM 调优场景，拟围绕 `hprofile` 离线 profiling 分析链路，研究如何从 Ascend `msprof` 原始产物中聚合有效性能信号，构建可追溯的瓶颈证据，并通过重复 benchmark 验证优化方向。课题重点不是实现通用系统监控看板，而是面向 NPU 分布式推理 profiling 数据，探索“raw trace -> 信号聚合 -> 结构压缩 -> 源码归因 -> 优化验证”的实用方法。
+
+1.2 课题目的及意义
+
+本课题目标是设计并实现一套面向 Ascend NPU 分布式推理的离线 profiling 信号聚合分析与优化验证方法。该方法以 `msprof` 原始产物为输入，完成统一事件建模、wait/comm/exec 分类、跨 stream 因果边推断、Loop Tree 重复结构压缩、节点级性能统计和 benchmark gate 验证，最终服务于性能瓶颈定位和源码优化。
+
+本课题具有以下意义：
+
+（1）工程价值：降低 NPU profiling 分析门槛。通过自动解析 `msprof_*.db`、统一 task 语义并输出结构化报告，减少人工翻查多目录、多数据库和多表格的成本。
+
+（2）方法价值：将原始 timeline 转化为面向优化决策的聚合信号。本文不只展示原始曲线，而是把细粒度事件聚合为 global breakdown、stream breakdown、causality edge、Loop Tree 等多层证据。
+
+（3）归因价值：显式建模等待与通信关系。通过 `EVENT_WAIT -> EVENT_RECORD` 的时间配对推断 producer/consumer stream，帮助回答“哪个 stream 在等哪个 stream”。
+
+（4）结构化价值：将人类在时间线中观察到的重复形状转化为机器可读结构。Loop Analyzer 将 stream task 序列压缩为 macro/tree，用于保留重复次数、顺序、时间窗和节点级统计。
+
+（5）验证价值：通过 benchmark gate 区分有效优化与噪声扰动。课题拟选择 vLLM-Ascend 分布式推理中的典型通信或同步瓶颈作为案例，从 profiling 信号出发形成优化假设，并通过多次重复实验验证优化方向是否有效。
+
+
+2 国内外研究现况及发展趋势
+
+2.1 GPU/NPU Profiling 与性能建模
+
+高性能计算和深度学习系统长期依赖 profiling 工具定位性能瓶颈。Roofline 模型通过算力上界和内存带宽上界解释程序瓶颈，是 GPU/NPU 性能分析的重要方法基础。TPU 数据中心性能分析工作进一步说明，异构加速器的真实性能不仅取决于硬件峰值，还取决于 workload 形态、片上存储、通信路径和调度方式。对于 Ascend NPU 这类平台，单纯查看设备利用率不足以解释大模型推理性能，需要进一步分析 task、stream、通信和同步等待等细粒度事件。
+
+在工具链方面，Ascend CANN 提供了 `msprof` profiling 能力，可以采集任务时间线、通信信息、算子统计、host/device 原始数据和导出视图。NVIDIA 生态中的 Nsight Systems、Nsight Compute 与 CUPTI 也提供类似的 CUDA API、kernel、memcpy、stream 和 NCCL 事件采集能力。现有工具能够提供较完整的原始信号，但往往停留在时间线浏览和统计表展示层面，开发者仍需依靠经验将原始事件转化为优化动作。
+
+2.2 大模型推理系统与 vLLM 性能问题
+
+大模型推理服务具有明显的系统复杂性。vLLM 通过 PagedAttention 降低 KV cache 碎片和过度预留，提高内存利用率；Orca 提出 iteration-level scheduling，指出生成式模型的调度粒度不能简单沿用请求级批处理；Sarathi-Serve 和 DistServe 进一步强调 prefill/decode 阶段差异、吞吐与时延折中以及 SLO 约束下的 goodput 优化。这些工作共同说明，LLM serving 的性能瓶颈往往跨越模型阶段、调度策略、内存管理和通信路径。
+
+因此，面向 vLLM/Ascend 的 profiling 分析不能只统计单个 kernel 耗时，还需要识别阶段行为、通信同步、跨 stream 等待以及运行时开销。本文工作以 vLLM-Ascend 分布式推理为主要实验场景，尝试从 `msprof` 原始信号中聚合出可解释瓶颈线索，并进一步连接到源码审计和优化验证。
+
+2.3 Trace 压缩、模式挖掘与源码归因
+
+大规模 trace 数据随并发度、设备数和采样粒度快速增长。ScalaTrace 等工作证明，通信 trace 可以通过结构化压缩保留关键模式并降低分析成本。Xu 等人在 MASCOTS 2010 提出的 execution trace loop nest discovery 方法进一步指出，trace 压缩不应只追求字符串变短，还应显式发现循环嵌套结构，使代表性片段更容易被识别。该思想对大模型推理 profiling 同样适用，因为 Transformer 层、decode 迭代和 collective communication 往往会在 stream 上形成重复 task 序列。
+
+源码归因方面，HPCToolkit 通过调用上下文树将性能开销映射到函数、循环和源码行，为并行程序性能优化提供了可解释路径。GPU 扩展工作则进一步处理 CPU/GPU 异构事件的统一归因问题。本文借鉴上述思想，但研究对象从 CPU/MPI execution trace 转向 Ascend NPU stream profiling trace，并结合 wait/comm/exec 语义分类、时间窗统计、Loop Tree 和源码锚点，服务于 NPU 分布式推理调优。
+
+2.4 发展趋势与问题归纳
+
+综合现有工作，性能分析技术正在从“工具输出”走向“语义表达”，从“单点统计”走向“跨层归因”，从“人工看图”走向“结构化证据”。当前仍存在的主要问题包括：
+
+（1）原始 profiling 数据复杂，task、stream、通信和同步信息分散在多张表和多个目录中；
+
+（2）现有工具容易展示事件，却不直接解释哪些信号构成瓶颈；
+
+（3）trace 压缩与性能归因常被分开处理，压缩后未必保留优化所需的时间窗和语义；
+
+（4）优化验证缺乏稳定 gate，容易把 benchmark 噪声当成收益。
+
+因此，面向 Ascend NPU 分布式推理构建 profiling 信号聚合、重复结构压缩和优化验证闭环，具有明确的研究与工程意义。
+
+
+3 研究内容与技术方案
+
+3.1 课题研究内容
+
+本课题拟完成以下工作：
+
+（1）`msprof` 原始信号解析与统一建模。分析 run 目录、`PROF_*`、`msprof_*.db`、host/device 原始切片与导出文件之间的关系，提取 run、db/process、device、stream、task、timestamp、duration、task type、communication metadata 等基础对象。
+
+（2）Profiling 信号聚合与降噪。将原始 task timeline 按语义归类为 exec、comm、wait、sync、idle、other，并在 run、phase、stream 等粒度上统计时间占比、idle gap 和瓶颈类型。
+
+（3）跨 stream 因果边推断。基于 `EVENT_WAIT -> EVENT_RECORD` 的时间配对，推断 producer/consumer stream 关系，输出等待边、等待总时长、p95 wait、unblock delay 和匹配率等指标。
+
+（4）Loop Tree 重复结构压缩。将单 stream task 序列符号化，发现重复片段并构建 macro/tree 表示；基于收益函数选择 macro，避免低价值重复片段污染结构；对节点计算耗时、wait/comm/exec 占比和实例时间窗。
+
+（5）源码锚点与优化验证。结合任务名称、通信路径、源码审计和 source notes，为瓶颈节点建立候选源码位置；通过 benchmark gate 比较 baseline 与优化试验结果，在吞吐、p95 和错误率约束下判断优化方案是否有效。
+
+3.2 课题预期目标
+
+预期目标包括：
+
+（1）完成 `hprofile` 离线分析流程，能够处理已有 Ascend `msprof` run，并生成 `unified_profile.json`、`lineage.json`、`quality_report.json`、breakdown、causality edges、Loop Tree 和离线报告。
+
+（2）完成 profiling 信号聚合方法描述，明确 raw signal、统一事件模型、语义分类、聚合降噪、因果边推断和 Loop Tree 压缩规则。
+
+（3）完成至少一个真实优化闭环案例。拟根据 wait/communication 信号定位 vLLM-Ascend 推理路径中的通信、同步或运行时开销问题，并通过源码级或配置级优化获得可验证的性能变化。
+
+（4）完成无效优化方向的反例分析，说明 benchmark gate 能过滤负收益、弱收益和不可复现收益。
+
+（5）给出后续扩展方向，包括 cross-stream Loop Dependency Graph、cross-rank 聚合、NVIDIA Nsight/CUPTI 适配和多 workload 评估。
+
+3.3 技术路线与方案
+
+3.3.1 关键技术
+
+（1）Ascend `msprof` raw layer 解析技术。以 `msprof_*.db` 为主输入，结合 `TASK`、`STRING_IDS`、`COMPUTE_TASK_INFO`、`COMMUNICATION_TASK_INFO`、`COMMUNICATION_OP` 和 HCCL 枚举表恢复 task 语义。
+
+（2）多粒度 profiling 信号聚合技术。对原始 task 按语义分类，并从全局、phase、stream 三个层次统计 wait/comm/exec/idle 占比，将细粒度噪声转化为稳定瓶颈信号。
+
+（3）跨 stream 等待关系推断技术。通过 `EVENT_WAIT` 与 `EVENT_RECORD` 的时间窗口配对构建 producer/consumer stream edge，并保留匹配率和置信边界。
+
+（4）Loop Tree 重复结构建模技术。借鉴 execution trace loop nest discovery 思想，将 stream task 序列转化为符号序列，基于收益函数选择 macro，构建可读、可统计、可回溯的 Loop Tree。
+
+（5）优化验证 gate。采用一次只验证一个优化方案的原则，比较 baseline 与优化试验的重复 benchmark 结果，结合最小增益、噪声门槛、p95 约束和 error rate 约束作出接受或拒绝决定。
+
+3.3.2 总体方案
+
+总体方案采用“输入适配层—统一建模层—信号分析层—报告与验证层”的四层结构。
+
+（1）输入适配层：发现并读取 Ascend `msprof` 原始目录、`msprof_*.db`、导出 CSV/JSON 和 run manifest。
+
+（2）统一建模层：统一表示 run、db/rank、device、stream、task、phase、edge、lineage 和 quality 信息。
+
+（3）信号分析层：完成 wait/comm/exec 分类、聚合降噪、cross-stream causality、Loop Tree、节点级统计和源码锚点。
+
+（4）报告与验证层：生成离线报告、可读表格、分析证据链和 benchmark gate 结果，用于支撑论文实验和后续调优。
+
+
+4 可行性与风险分析
+
+4.1 制约因素与风险
+
+本课题主要风险包括：
+
+（1）工具链和环境兼容风险。Ascend 驱动、CANN 版本、容器环境和 vLLM-Ascend 版本差异可能导致 profiling 字段或实验结果不一致。
+
+（2）数据规模风险。长时间 profiling 产生大量 task 和多个数据库，可能影响解析速度和人工阅读效率。
+
+（3）启发式误判风险。跨 stream causality 基于时间线配对推断，并非运行时显式依赖表，存在匹配率和置信边界问题。
+
+（4）Loop Tree 边界风险。当前 Loop Analyzer 主要针对 single stream 重复结构，尚未完成 cross-stream/cross-rank 全局 pattern 聚合。
+
+（5）实验复现风险。大模型推理 benchmark 容易受环境、随机性和系统负载影响，需要通过重复实验与 gate 策略降低误判。
+
+针对上述风险，拟采取如下措施：
+
+（1）记录实验环境、版本信息和 run manifest，保证结果可追溯；
+
+（2）采用聚合优先策略，先输出 global/stream/phase summary，再按需查看明细；
+
+（3）在 causality 结果中保留匹配率、时间窗口和 quality report，避免过度解释；
+
+（4）在论文中明确 Loop Analyzer 当前边界，将跨 stream/cross-rank pattern graph 作为后续深化方向；
+
+（5）采用 baseline/优化试验三次重复和 benchmark gate，避免将单次波动作为优化收益。
+
+4.2 成本估算与可行性
+
+传统 COCOMO 主要以代码行规模作为估算基础，更适合需求相对稳定、交付边界清晰的传统软件工程项目。本课题属于“方法研究 + 工具原型 + 实验验证”结合的毕业设计，关键成本并不在代码行数量本身，而在 profiling 信号理解、分析假设建立、算法实现、实验复现和结果解释。因此，本课题采用“任务分解 + 里程碑证据 + AI 辅助开发修正”的方式进行工作量估算。
+
+具体来说，工作量按研究任务而非代码规模拆分：
+
+（1）文献调研与问题定义：调研 Ascend/CANN profiling、vLLM 推理系统、异构计算性能分析、execution trace loop discovery 和 AI 辅助软件开发等相关内容，明确研究对象和技术边界，预计 1~2 周。
+
+（2）原始信号建模：梳理 `msprof` 输出目录、数据库、CSV/JSON 表和不同粒度 profiling 字段，形成 raw signal 说明和统一 profile 模型，预计 2~3 周。
+
+（3）信号聚合与降噪分析：实现 wait/comm/exec 分类、stream/task/phase 级聚合、异常长尾识别和 quality report，使海量原始 task 转化为可解释的性能信号，预计 2~3 周。
+
+（4）跨 stream 因果边与 Loop Analyzer：实现基于时间线窗口的 cross-stream causality 推断；将 task 序列符号化并构建 Loop Tree，通过收益函数选择有效 macro，预计 2~3 周。
+
+（5）优化验证与实验整理：围绕典型 NPU 推理 workload 设计 baseline/优化试验对比，使用重复 benchmark 和 gate 策略判断性能变化是否可信，预计 2~3 周。
+
+（6）论文撰写与材料整理：完成开题报告、论文正文、实验图表、参考文献和答辩材料，预计 2 周。
+
+在 AI 辅助开发条件下，代码脚手架、接口适配、文档整理、局部重构和测试命令排查可以借助 Codex 等工具提高效率。但本课题的系统方案、信号抽象、算法取舍、实验设计、结果判读和论文论证仍由作者完成，AI 工具不能替代 profiling 语义理解和实验有效性判断。因此，AI 辅助主要降低重复编码与整理成本，同时增加必要的人工审查、回归验证和结果复核成本；估算时不简单按代码生成速度折减总工作量，而是将其作为实现阶段的效率修正因素。
+
+综合上述任务，本课题总体工作量约为 10~14 周，符合本科毕业设计周期。可行性基础包括：已有 Ascend NPU 和 vLLM-Ascend 实验环境；已有 `msprof` 原始数据获取路径；分析对象收敛在离线 profiling 与优化验证闭环；系统原型由作者原创设计并持续实现。为控制风险，论文阶段将范围限定为 Ascend/vLLM 主线、single-stream Loop Tree、cross-stream causality 和一个可复现实验案例；NVIDIA 适配、多 workload 泛化和 cross-rank 全局 pattern graph 作为后续研究方向。
+
+
+5 课题研究进度安排
+
+表1 课题研究进度安排表
+
+时间段	工作任务
+2025年12月~2026年1月	文献调研；熟悉 Ascend CANN/msprof、vLLM、trace 压缩和异构性能归因相关工作；搭建实验环境
+2026年2月	完成需求分析、总体方案设计、raw signal 说明和开题报告
+2026年3月	完成 hprofile 基础解析、统一 profile、lineage、quality report 和 legacy stage analyzer 联调
+2026年4月	完成 Loop Analyzer、cross-stream causality、典型优化案例实验和论文方法章节初稿
+2026年5月	补充实验环境表、方法流程图、Loop Tree 示例、无效优化方向对比表，并完成论文正文定稿
+2026年6月	完成论文格式检查、答辩材料准备与毕业答辩
+
+
+6 主要参考文献
+
+[1] Williams S, Waterman A, Patterson D. Roofline: An Insightful Visual Performance Model for Multicore Architectures[J]. Communications of the ACM, 2009, 52(4): 65-76.
+[2] Jouppi N P, Young C, Patil N, et al. In-Datacenter Performance Analysis of a Tensor Processing Unit[EB/OL]. arXiv:1704.04760, 2017.
+[3] Kwon W, Li Z, Zhuang S, et al. Efficient Memory Management for Large Language Model Serving with PagedAttention[EB/OL]. arXiv:2309.06180, 2023.
+[4] Yu G I, Jeong J S, Kim G W, et al. Orca: A Distributed Serving System for Transformer-Based Generative Models[C]. OSDI, 2022: 521-538.
+[5] Agrawal A, Kedia N, Panwar A, et al. Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve[C]. OSDI, 2024: 117-134.
+[6] Zhong Y, Liu S, Chen J, et al. DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving[C]. OSDI, 2024: 193-210.
+[7] Noeth M, Ratn P, Mueller F, et al. ScalaTrace: Scalable Compression and Replay of Communication Traces for High-Performance Computing[J]. Journal of Parallel and Distributed Computing, 2009, 69(8): 696-710.
+[8] Krishnamoorthy S, Agarwal K. Scalable Communication Trace Compression[C]. CCGrid, 2010: 408-417.
+[9] Xu Q, Subhlok J, Hammen N. Efficient Discovery of Loop Nests in Execution Traces[C]. MASCOTS, 2010: 193-202.
+[10] Adhianto L, Banerjee S, Fagan M W, et al. HPCTOOLKIT: Tools for Performance Analysis of Optimized Parallel Programs[J]. Concurrency and Computation: Practice and Experience, 2010, 22(6): 685-701.
+[11] Zhou K, Adhianto L, Anderson J, et al. Measurement and Analysis of GPU-accelerated Applications with HPCToolkit[EB/OL]. arXiv:2109.06931, 2021.
+[12] Adhianto L, Anderson J, Barnett R M, et al. Refining HPCToolkit for Application Performance Analysis at Exascale[J]. The International Journal of High Performance Computing Applications, 2024, 38(6): 612-632.
+
+
+华中科技大学本科生毕业设计（论文）开题报告评审表
+
+
+姓名	田景远	学号	U202015328	指导教师	张书豪
+院（系）专业	 计算机科学与技术学院计科2202
+指导教师评语
+1.学生前期表现情况。
+2.是否具备开始设计（论文）条件？是否同意开始设计（论文）？
+3.不足及建议。
+
+
+
+
+
+
+
+
+
+
+
+
+
+评   分：                        指导教师（签名）：       
+
+                                                                 2026年4月20日
+教研室（系、所）或开题报告答辩小组审核意见
+
+
+
+
+
+教研室（系、所）或开题报告答辩小组负责人（签名）：     
+                                                   
+2026年4月20日

@@ -34,6 +34,7 @@ python -m imonitor -- python -c "import time; [time.sleep(0.2) for _ in range(10
 
 - Ascend vLLM startup guide: [ASCEND_VLLM_STARTUP.md](./ASCEND_VLLM_STARTUP.md)
 - CANN 8.5 docs crawl guide: [develop/CANN850_DOC_CRAWL.md](./develop/CANN850_DOC_CRAWL.md)
+- Loop tree perf/source 闭环设计: [docs/loop_tree_closure_design.md](./docs/loop_tree_closure_design.md)
 
 ## Unified Daemon Mode
 

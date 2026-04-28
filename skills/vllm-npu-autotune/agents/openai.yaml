@@ -1,0 +1,4 @@
+interface:
+  display_name: "vLLM NPU Autotune"
+  short_description: "State-machine vLLM NPU throughput autotuning"
+  default_prompt: "Use this skill to run a reproducible vLLM NPU autotuning loop: set targets, run preflight checks by configured runtime (local or docker_exec), pass profiler dev-mode smoke, saturate workload, analyze bottlenecks, apply one patch at a time, and keep only statistically valid improvements."

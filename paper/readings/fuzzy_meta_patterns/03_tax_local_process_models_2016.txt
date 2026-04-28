@@ -1,0 +1,1241 @@
+
+
+===== PAGE 1 =====
+
+arXiv:1606.06066v2  [cs.DB]  16 May 2017
+Mining Local Process Models
+Niek Taxa,b, Natalia Sidorova a, Reinder Haakma b, Wil M. P. van der Aalst a
+aEindhoven University of Technology, P.O. Box 513, Eindhove n, The Netherlands
+bPhilips Research, Prof. Holstlaan 4, 5665 AA Eindhoven, The Netherlands
+Abstract
+In this paper we describe a method to discover frequent behaviora l patterns in
+event logs. We express these patterns as local process models . Local process
+model mining can be positioned in-between process discovery and ep isode /
+sequential pattern mining. The technique presented in this paper is able to
+learn behavioral patterns involving sequential composition, concu rrency, choice
+and loop, like in process mining. However, we do not look at start-to- end models,
+which distinguishes our approach from process discovery and crea tes a link to
+episode / sequential pattern mining. We propose an incremental pr ocedure for
+building local process models capturing frequent patterns based o n so-called
+process trees. We propose ﬁve quality dimensions and correspond ing metrics
+for local process models, given an event log. We show monotonicity p roperties
+for some quality dimensions, enabling a speedup of local process mod el discovery
+through pruning. We demonstrate through a real life case study t hat mining
+local patterns allows us to get insights in processes where regular s tart-to-end
+process discovery techniques are only able to learn unstructured , ﬂower-like,
+models.
+Keywords: Process mining, Knowledge discovery, Data mining
+1. Introduction
+Process mining aims to extract novel insight from event data [1]. Pr ocess
+discovery, the task of discovering a process model that is repres entative for the
+set of event sequences in terms of start-to-end behavior, i.e. fr om the start
+of a case till its termination, plays a prominent role in process mining. M any
+process discovery algorithms have been proposed and applied to a v ariety of real
+life cases (see [1] for an overview). A diﬀerent perspective on mining patterns in
+event sequences can be found in the data mining ﬁeld, where the epis ode mining
+[2] and sequential pattern mining [3] subﬁelds focus on ﬁnding freq uent patterns
+that are local, not necessarily describing the whole event sequence s from start
+to end. Episode mining and sequential pattern mining have e.g. been u sed to
+analyze telecommunication networks [2], web navigational logs [2, 4], a nd retail
+sales transactions [5].
+Preprint submitted to Journal of Innovation in Digital Ecos ystems May 17, 2017
+
+
+===== PAGE 2 =====
+
+Event sequences
+⟨A,A,C,B,A,A,C,B,B,C⟩
+⟨C,A,C,B,A,A,A,B,C,B⟩
+⟨A,A,B,D,C,D,A,B,C,B⟩
+⟨C,A,C,B,B,B,A,D,B,C⟩
+⟨B,A,B,C,C⟩
+⟨D,A,C,B,C,A,A,C,A,B⟩
+⟨D,A,B,C,D,C,A,C,A,B,C⟩
+(a)
+A 13/21
+B 13/20
+C 13/19
+(b)
+B
+A
+C
+D
+(c)
+Sequential
+patterns
+⟨A, B, A ⟩
+⟨A, B, C ⟩
+⟨A, C, A ⟩
+⟨A, C, B ⟩
+⟨B, A, B ⟩
+⟨B, A, C ⟩
+⟨C, A, C ⟩
+(d)
+Figure 1: (a) A log L of sales oﬃcer event sequences with highlighted instances o f the frequent
+pattern. (b) The local process model showing frequent behavior in L. (c) The Petri net dis-
+covered on L with the Inductive Miner algorithm [12]. (d) The sequential patterns discovered
+on L with the PreﬁxSpan algorithm [13].
+Sequential pattern mining and episode mining are limited to the discove ry
+of sequential orderings or partially ordered sets of events, while process discov-
+ery methods aim to discover a larger set of event relations, including sequential
+orderings, (exclusive) choice relations, concurrency, and loops, represented in
+process models such as Petri nets [6], BPMN [7], and process trees [8]. Pro-
+cess models that can be discovered with process discovery method s distinguish
+themselves from more traditional sequence mining methods like Hidde n Markov
+Models [9] and Recurrent Neural Networks [10, 11] in that proces s models can
+be visually represented and their visual representation can be use d for commu-
+nication between process stakeholders. However, process disco very is normally
+limited to the discovery of a model capturing the behavior of proces s instances
+as a whole, and not local patterns within instances. Our goal is to de velop
+methods allowing to mine local process models positioned in-between simple
+patterns (e.g. subsequences) and start-to-end models. Local process models
+focus on a subset of the process activities and describe some beha vioral pattern
+that occurs frequently within event sequences. Such local proce ss models cannot
+be discovered by using standard techniques.
+Imagine a sales department where multiple sales oﬃcers perform fou r types
+of activities: (A) register a call for bids, (B) investigate a call for b ids from
+the business perspective, (C) investigate a call for bids from the le gal perspec-
+tive, and (D) decide on participation in the call for bid. The event seq uences
+(Figure 1a) contain the activities performed by one sales oﬃcer thr oughout the
+day. The sales oﬃcer works on diﬀerent calls for bids and not necess arily per-
+forms all activities for a particular call himself. Applying discovery alg orithms,
+like the Inductive Miner [12], yields models allowing for any sequence of e vents
+(Figure 1c). Such ”ﬂower-like” models do not give any insight in typica l be-
+havioral patterns. When we apply any sequential pattern mining alg orithm
+using a threshold of six occurrences, we obtain the seven length-t hree sequential
+patterns depicted in Figure 1d (results obtained using the SPMF [14 ] implemen-
+tation of the PreﬁxSpan algorithm [13]). However, the data conta ins a frequent
+non-sequential pattern where a sales oﬃcer ﬁrst performs A, followed by B and
+a C in arbitrary order (Figure 1b). This pattern cannot be found with e xisting
+process discovery and sequential pattern mining techniques. The two numbers
+2
+
+
+===== PAGE 3 =====
+
+shown in the transitions (i.e., rectangles) represent (1) the numbe r of events
+of this type in the event log that ﬁt this local process model and (2) the total
+number of events of this type in the event log. For example, 13 out o f 19 events
+of type C in the event log ﬁt transition C, which are indicated in bold in the
+log in Figure 1a. Underlined sequences indicate non-continuous insta nces, i.e.
+instances with non-ﬁtting events in-between the events forming t he instance of
+the local process model.
+In this paper we describe a method to extract frequently occurrin g local pro-
+cess models, allowing for choice, concurrency, loops, and sequence relations. We
+leverage process trees [15] to search for local process models, a nd describe a way
+to recursively explore candidate process trees up to a certain mod el size. For
+convenience, we often use the Petri net representations for pr ocess trees. In fact,
+results can also be visualized as BPMN [7], EPC [16], UML activity diagram
+[17], or UML statechart diagram [17]. We deﬁne ﬁve quality dimensions t hat
+express the degree of representativeness of a local process mo del with regard
+to an event log: support, conﬁdence, language ﬁt , coverage, and determinism.
+Based on quality metrics, we describe monotonicity properties over some quality
+dimensions and show how they can be used to make the recursive sea rch over
+process trees more eﬃcient.
+The paper is organized as follows. Section 2 introduces the basic con cepts
+used in this paper. Section 3 describes related work in the ﬁelds of pr ocess
+discovery and sequential pattern mining. Section 4 describes our lo cal process
+model mining approach. Section 5 introduces quality dimensions and m etrics
+for local process models and discusses monotonicity properties. S ection 6 de-
+scribes a local process model evaluation approach based on alignme nts. Section
+7 shows the relevance of the proposed technique using two real life data sets and
+compares the results with the results obtained with several relate d techniques.
+Section 8 concludes the paper.
+2. Preliminaries
+In this section we introduce process modeling notations, including Pe tri nets,
+process trees, which are used in later sections of this paper.
+X ∗ denotes the set of all sequences over a set X and σ = ⟨a1, a 2, . . . , a n⟩ a
+sequence of length n; ⟨⟩ is the empty sequence and σ1 ·σ2 is the concatenation
+of sequences σ1, σ 2. σ ↾ Q is the projection of σ on Q, e.g. ⟨a, b, c, a, b, c ⟩ ↾{a,c}=
+⟨a, c, a, c ⟩. # a(σ ) denotes the number of occurrences of element a in sequence
+σ , e.g. # a(⟨a, b, c, a ⟩) = 2.
+Deﬁnition 1 (Applying F unctions to Sequences). A partial function f ∈
+X ↛ Y can be lifted to sequences over X using the following recursive deﬁnition:
+(1) f (⟨⟩) = ⟨⟩; (2) for any σ ∈ X ∗ and x ∈ X:
+f (σ · ⟨x⟩) =
+{ f (σ ) if x /∈ dom(f ),
+f (σ ) · ⟨f (x)⟩ if x ∈ dom(f ).
+3
+
+
+===== PAGE 4 =====
+
+A
+B
+C
+Figure 2: Example of an accepting Petri net.
+We assume the set of all process activities ΣL to be given. An event e is
+the occurrence of an activity e ∈ ΣL. We call a sequence of events t ∈ ΣL
+∗
+a trace. An event log L ∈ NΣL ∗
+is a ﬁnite multiset of traces. For example,
+the event log L = [ ⟨a, b, c ⟩2, ⟨b, a, c ⟩3] consists of 2 occurrences of trace ⟨a, b, c ⟩
+and three occurrences of trace ⟨b, a, c ⟩. We lift the sequence projection to the
+multisets of sequences in the standard way. For example, for the lo g L given
+above L ↾{a,c}= [ ⟨a, c ⟩5]. We lift the number of occurrences in a sequence to
+multisets of sequences in the standard way, for example, # a(L) = 5.
+Petri nets are directed bipartite graphs consisting of transitions and places,
+connected by arcs. Transitions represent activities, while places r epresent the
+enabling conditions of transitions. Labels are assigned to transition s to indicate
+the type of activity that they model. A special label τ is used to represent
+invisible transitions, which are only used for routing purposes and no t recorded
+in the execution log.
+Deﬁnition 2 (Labeled Petri net). A labeled Petri net N = ⟨P, T, F, ΣM , ℓ ⟩
+is a tuple where P is a ﬁnite set of places, T is a ﬁnite set of transitions such
+that P ∩ T = ∅, F ⊆ (P × T ) ∪ (T × P ) is a set of directed arcs, called the ﬂow
+relation, ΣM is a ﬁnite set of labels representing activities, with τ / ∈ ΣM being a
+label representing invisible events, and ℓ : T → ΣM ∪ { τ} is a labeling function
+that assigns a label to each transition.
+For a node n ∈ (P ∪ T ) we use •n and n• to denote the set of input and output
+nodes of n, deﬁned as •n = {n′|(n′, n ) ∈ F } and n• = {n|(n, n ′) ∈ F } .
+A state of a Petri net is deﬁned by its marking M ∈ NP being a multiset of
+places. A marking is graphically denoted by putting M (p) tokens on each place
+p ∈ P . A pair ( N, M ) is called a marked Petri net. State changes occur through
+transition ﬁrings. A transition t is enabled (can ﬁre) in a given marking M if
+each input place p ∈ • t contains at least one token. Once a transition ﬁres,
+one token is removed from each input place of t and one token is added to each
+output place of t, leading to a new marking M ′ deﬁned as M ′ = M − • t + t•.
+A ﬁring of a transition t leading from marking M to marking M ′ is denoted as
+M
+l(t)
+− → M ′. M1
+l(σ)
+− → M2 indicates that M2 can be reached from M1 through a
+ﬁring sequence σ ′ ∈ ΣM
+∗ .
+Often it is useful to consider a Petri net in combination with an initial
+marking and a set of possible ﬁnal markings. This allows us to deﬁne th e
+language accepted by the Petri net and to check whether some be havior is part
+of the behavior of the Petri net (can be replayed on it).
+4
+
+
+===== PAGE 5 =====
+
+Deﬁnition 3 (Accepting Petri net). An accepting Petri net is a triple APN =
+(N, M 0, MF ), where N is a labeled Petri net, M0 ∈ Np is its initial marking, and
+MF ⊆ Np is its set of possible ﬁnal markings, such that ∀M1,M2∈ MF M1 ⊈ M2.
+A sequence σ ∈ T ∗ is called a trace of an accepting Petri net APN if M0
+σ
+− → Mf
+for some ﬁnal marking Mf ∈ MF . The language L(AP N) of APN is the set
+of all its traces.
+Figure 2 shows an example of an accepting Petri net. Circles repres ent
+places and rectangles represent transitions. Invisible transitions (labeled τ) are
+depicted as black rectangles. Places that belong to the initial markin g contain
+a token and places belonging to a ﬁnal marking contain a bottom right label fi
+with i a ﬁnal marking identiﬁer, or are simply marked as in case of a single
+ﬁnal marking. The language of this accepting Petri net is {⟨A, B, C ⟩, ⟨A, C, B ⟩}.
+A diﬀerent process representation is a process tree [15]. Process trees can
+only model sound (deadlock-free and livelock-free) processes. T he recursive
+deﬁnition of process trees make them a convenient representatio n to iteratively
+expand process models into larger process models.
+Deﬁnition 4 (Process tree). Let A ∈ ΣM be a ﬁnite set of activities with
+τ / ∈ ΣM . ⨁ = {→ , × , ∧ , ⟳} is the set of process tree operators.
+• if a ∈ ΣM ∪ { τ} then Q = a is a process tree.
+• if Q1, Q 2 are process trees, and ⊕ ∈ ⨁, then Q = ⊕ (Q1, Q 2) is a process
+tree.
+A process tree is a tree structure consisting of operator and activity nodes, suc h
+that each leaf node is an activity node and each non-leaf node is an op erator
+node.
+The loop operator ( ⟳) has two child nodes, with the ﬁrst child the ”do”
+part and the second child the ”redo” child. Process tree p1 = ⟳ (a, b) accepts
+language L(p1) = {⟨a⟩, ⟨a, b, a, ⟩, ⟨a, b, a, b, a ⟩, . . . }.
+The sequence operator ( → ) has two children, such that the ﬁrst child is
+executed prior to execution of the second child. The language of pr ocess tree
+p2 = → (a, b) is L(p2) = {⟨a, b ⟩}.
+The exclusive choice operator ( × ) has two children, indicating that either
+the ﬁrst or the second child will be executed, but not both. The lang uage of
+process tree p3 = × (a, b ) is L(p3) = {⟨a⟩, ⟨b⟩}.
+The concurrency operator ( ∧ ) has two children, indicating that the both
+children will be executed in parallel. Process tree p4 = ∧ (→ (a, b), → (c, d ))
+accepts language L(p4) = {⟨a, b, c, d ⟩, ⟨a, c, b, d ⟩, ⟨a, c, d, b ⟩, ⟨c, a, b, d ⟩, ⟨c, a, d, b ⟩,
+⟨c, d, a, b ⟩}.
+Let p5 = × (⟳ (a, b ), ∧ (c, d )). Figure 3 shows the graphical representation
+of p5. Because the do and redo children of a loop operator can be execut ed
+an arbitrary number of times, process trees containing a loop oper ator have a
+language of inﬁnite size.
+5
+
+
+===== PAGE 6 =====
+
+×
+⟳
+a b
+∧
+c d
+A
+B
+C
+D
+Figure 3: Graphical representation of process tree ×(⟳ (a, b), ∧(c, d)).
+We deﬁne n-restricted language, consisting of all language traces of at most
+length n ∈ N, as Ln = {t ∈ L | |t| ≤ n}. The n-restricted language is guaran-
+teed to be of ﬁnite size, independent of the operators in the proce ss tree. The
+5-restricted language of the process tree p5 is L5(p5) = {⟨a⟩, ⟨a, b, a ⟩, ⟨a, b, a, b, a ⟩,
+⟨c, d ⟩, ⟨d, c ⟩}.
+3. Related Work
+ProM’s Episode Miner [18] is a method that can be considered to be in-
+between episode mining and process mining, as it discovers a collection of pat-
+terns from an event log where each pattern consists of partial or der constructs.
+However, contrary to the technique that we describe in this paper , ProM’s
+Episode Miner does not support loop and exclusive choice construct s and is not
+easily extensible to include new types of constructs.
+Lu et al. propose a method called Post Sequential Patterns Mining (P SPM)
+[19] that takes a input a set of sequential patterns and post-pro cesses them into
+a single graph consisting of sequential and exclusive choice constru cts, which
+they call a Sequential Pattern Graph (SGP) [20]. A later extension b y Lu et al.
+adds the capability to mine concurrency relations [21]. An SGP can be d iscov-
+ered from an event log by ﬁrst applying any existing sequential patt ern mining
+algorithm followed by PSPM on the discovered set of sequential patt erns. The
+reliance of PSPM methods on the output of sequential pattern minin g techniques
+can also be considered to be a drawback of the approach. When two activities A
+and B are in parallel then both the orderings ⟨A, B ⟩ and ⟨B, A ⟩ will be present
+in the complete log. However, if one of the two orderings is more freq uent than
+the other due to chance, one of the two orderings might not reach the support
+set in the sequential pattern mining, making it impossible for PSPM met hods
+to discover the concurrency of A and B. A more fundamental distinction be-
+tween PSPM and Local Process Model (LPM) discovery is that PSPM merges
+all relations into one single pattern while LPM discovery aims at discove ring
+a collection of patterns. Merging separate patterns into a single gr aph could
+result in one single overgeneralizing graph. For example in the case of log L =
+[⟨b, a, c ⟩100, ⟨d, a, e ⟩100], sequential pattern mining techniques will ﬁnd two se-
+quential patterns: b, a, c and d, a, e . Merging them into a single graph where a is
+6
+
+
+===== PAGE 7 =====
+
+followed by either c or e and is preceded by either b or d results in the loss the long
+term dependency where b already determines the occurrence of a c after the a.
+Jung et al. [22] describe a method to mine frequent patterns from a collection
+of process models by transforming each business process to a vec tor format
+and then applying agglomerative clustering. Diamantini et al. [23, 24] take a
+similar approach, but apply graph clustering techniques instead of a traditional
+clustering approach. These techniques diﬀer from LPM discovery a s they take
+as input a set of process models instead of an event log. However, in many
+situations there are no existing process models available and, as sho wn in the
+introduction, it is not always possible to mine structured process mo dels from
+an event log using process discovery techniques.
+In later work, Diamantini et al. [25] describe a method to mine freque nt
+patterns in process model notation through a two step approach . First each
+trace from the event log is transformed into a so called instance gra ph [26],
+which is graph representation of a trace that shows which steps in t he trace
+are performed sequentially and which steps are performed in paralle l (i.e. over-
+lapping in time). In the second step they apply a graph clustering tec hnique
+to obtain frequent subgraphs from this set of instance graphs. H owever, since
+instance graphs are limited to sequential and parallel constructs, other process
+constructs, such as choices and loops, cannot be discovered with the approach
+described in Diamantini et al. [25], while they can be discovered with LPM
+discovery.
+The techniques developed in the area of trace clustering [27, 28, 2 9, 30] are
+related to LPM discovery in the sense that both aim to enable extrac tion of
+process insight from event logs where the process is too unstruct ured for ex-
+isting process discovery techniques to ﬁnd a structured process model. Trace
+clustering techniques aim to solve this by clustering similar traces tog ether to
+prevent mixing diﬀerent usage scenarios into one single unstructur ed process
+model. Trace clustering techniques work well when the original even t log does
+not originate from one single process, but in fact originates from mu ltiple pro-
+cesses. However, not in all types of complex and ﬂexible event data there is a
+cluster tendency in the data. An example for such non-clusterable event data
+can be found in the log shown in Figure 1a, where no clustering over th e traces
+would enable the discovery of the frequent pattern shown in Figure 1b. The
+traces in the log have large parts of randomness within the traces, while trace
+clustering helps for cases where there is a large degree of variety between traces.
+Declarative process models, such as Declare [31], deﬁne the allowed behavior
+through constraints that must be respected while carrying out th e process. This
+contrasts procedural process models, which are dominant in the p rocess discov-
+ery ﬁeld and specify all possible orderings of events explicitly. Two ex amples of
+process discovery approaches that generate declarative proce ss models are the
+DPIL Miner [32] and the Declare Miner [33]. Both approaches specify a set
+of rule templates that consists of two activity variables and their relation. An
+example of such a template is sequence(a, b ), indicating that some activity a
+is followed by b. Concrete rules are extracted from the event log based on this
+template-based search. However, since the rule templates are limit ed to relations
+7
+
+
+===== PAGE 8 =====
+
+between two activities, more complex relations between three or mo re activities
+cannot be discovered. Imagine that for some event log a declarativ e process dis-
+covery method ﬁnds two relations: sequence(a, b ) and sequence(b, c ), indicating
+that both the occurrences of activity b after a and the occurrences of activity
+c after b meet some support threshold. The binary relations sequence(a, b ) and
+sequence(b, c ) combined do not imply a tertiary relation equivalent to process
+tree → (a, → (b, c )), since it could be the case that speciﬁcally those occurrences
+of b that are preceded by a are rarely followed by c. The LPM discovery ap-
+proach discussed in this paper enables discovery of relations betwe en three or
+more activities.
+Hybrid process discovery [34] aims at discovering a process model t hat con-
+sists partially of procedural process model constructs and part ially of declarative
+process model constructs. Existing hybrid process discovery ap proaches consist
+of a ﬁrst step where activities are separated into a group of struc tured activities
+and a group of unstructured activities, based on the number of un ique prede-
+cessors and successors of an activity. However, some activities, such as activity
+a in the event log of Figure 1a, are part of a frequent pattern, but a lso to occur
+as noise at random point in the traces. Such activities would be classiﬁ ed as
+noisy activities by existing hybrid process discovery approaches, r esulting in this
+activity being modeled with binary declarative constructs.
+The Fuzzy Miner [35] is a process discovery technique developed to d eal with
+complex and ﬂexible process models. It connects nodes that repre sent activities
+with edges indicating follows relations, taking into account the relativ e signif-
+icance of follows/precedes relations and allowing the user to ﬁlter ou t edges
+using a slider. However, the process models obtained using the Fuzz y Miner
+lack formal semantics, e.g. when a node has two or more outgoing ed ges, it
+is undeﬁned whether this represents a choice, an exclusive choice, or parallel
+execution of the connected nodes.
+We have described several techniques that are related in that sen se that
+i) they aim to enable mining of process insight from less structured pr ocesses
+on which traditional process discovery methods fail, or ii) they aim to extract
+a collection of process models that each represent some subproce ss. However,
+none of the existing techniques in category (i) is able to deal with eve nt logs
+where some frequent patterns are surrounded by random event s, as is the case
+in the event log in Figure 1a, and all of the existing methods in categor y (ii)
+either require a completely diﬀerent type of input (a collection of gra phs), or
+they support only a part of the constructs supported by the LPM discovery
+approach.
+4. Local Process Model Discovery Approach
+A local process model (LPM) aims to describe frequent behavior in a n event
+log in local, i.e. smaller, patterns, typically between three and ﬁve act ivity
+nodes. A LPM does not aim to describe all behavior in a trace complete ly, but
+instead aims to describe traces partially, focusing on frequently oc curring pat-
+terns. A LPM LN represents behavior over Σ M and accepts language L(LN ).
+8
+
+
+===== PAGE 9 =====
+
+a b · · · z
+Figure 4: Set of elementary process trees over Σ L = {a, b, . . . , z}.
+The closure of the accepting language with respect to alphabet Σ L is deﬁned as
+L(LN , ΣL) = {σ ∈ ΣL
+∗ |σ ↾ΣM ∈ L(LN )}.
+Here, we introduce a local process model discovery approach tha t consists of
+four main steps:
+1) Generation Generate the initial set CM 1 (so i = 1) of candidate LPM in
+the form of process trees consisting of one leaf for each activity a ∈ ΣL.
+Figure 4 shows this set of elementary process trees for an event lo g over
+alphabet Σ L = {a, b, . . . , z }. Create selected set of selected LPMs SM =
+∅.
+2) Evaluation Evaluate LPMs in current candidate set CM i based on a set of
+quality criteria.
+3) Selection Based on evaluation results, a set SCM i ⊆ CM i of candidate
+LPMs are selected. SM = SM ∪ SCM i. If SCM i = ∅ or i ≥ max
+iterations:
+stop.
+4) Expansion Expand SCM i into a set of larger, expanded, candidate process
+models, CM i+1. Goto step 2 using the newly created candidate set CM i+1.
+Expansion consists of the replacement of one of the leaf activity no des a
+of the process tree by an operator node of one of the operator t ypes, where
+one of the child nodes is the replaced activity node a and the other is a new
+activity node representing one of the activities b ∈ ΣL. Figure 5 shows the set of
+expansion operations to leaf node a, consisting of six possible expansions. Two
+types of expansion operations are deﬁned for the sequence ( → ) and the loop
+(⟳) operator types, as → (a, b ) ̸≡ → (b, a ) and ⟳ (a, b ) ̸≡ ⟳ (b, a ). However,
+only one expansion operation is needed for the ∧ and × operators because of
+their symmetry ( ∧ (a, b ) ≡ ∧ (b, a ) and × (a, b ) ≡ × (b, a )). We call ∧ and ×
+symmetrical operators.
+×
+×
+a c
+b
+≡
+×
+a ×
+b c
+Expanding the ﬁrst leaf node ( a) of process tree × (a, b )
+with the × operator and some activity c ∈ ΣL results in
+the leftmost process tree depicted on the right, while ap-
+plying the same expansion the second leaf node ( b) of
+the same process tree results in a behaviorally equivalent
+process tree (as shown on the right). The same holds for
+expansion of ∧ (a, b ) with the ∧ operator. Therefore, the number of expansions
+can be reduced further by restricting expansion of a leaf node tha t has a sym-
+metrical operator as parent with the same symmetrical operator only to the
+9
+
+
+===== PAGE 10 =====
+
+a =⇒
+→
+a b
+→
+b a
+∧
+a b
+×
+a b
+⟳
+a b
+⟳
+b a
+Figure 5: The set of process tree expansion operations to lea f node a, where b ∈ ΣL.
+rightmost child. This prevents unnecessary computation by gener ating both of
+the behaviorally equivalent trees shown on the right.
+The number of possible expansion operations for a process tree P grows with
+the size of the alphabet of the event log |ΣL| and the number of activity nodes
+in P . This is easy to see, as each type of expansion operation can be app lied to
+each activity node in P , leading to 6 × | ΣL| expansion operations per activity
+node. At every point in the expansion process, the number of activ ity nodes in
+the tree is equal to the number of expansion operations performe d plus one, as
+each expansion operation adds one activity node to the process tr ee.
+The local process model discovery procedure stops when no proc ess tree in
+the current set of candidate process models meets the quality crit eria, or, to
+guarantee termination, when a maximum number of expansion steps ,
+max iterations, is reached.
+The approach of iteratively expanding, selecting, and expanding pr ocess
+trees described above is not theoretically limited to the set of opera tor nodes
+described above, and can easily be extended to other operators, such as an
+inclusive choice operator or a long-term dependency operator. Ad ding extra
+operators, however, comes with the price of increased computat ional complexity
+as it increases the number of ways to expand a process tree.
+5. Quality Criteria & Metrics
+Assume for now that we have an oracle function λ LN that generates a seg-
+mentation of a given trace σ : λ LN (σ ) = γ0ξ1γ1ξ2 . . . ξ kγk, with ξi ∈ L(LN ) and
+γi /∈ L(LN ), such that the number of events in {ξ1, . . . , ξ k} is maximized: the
+higher the number of events in ξi ∈ L(LN ) segments, the larger the share of
+trace σ explained by the LPM. A higher value k indicates more frequent pres-
+ence of LPM execution traces in σ . λ k
+LN (σ ) denotes the number of ξ ∈ L(LN )
+segments in λ LN (σ ). λ ξ
+LN (σ ) denotes the multiset of segments ξi ∈ L(LN ).
+Here we discuss a number of quality criteria for LPM with regard to an event
+log.
+Support Relates to the number of fragments in the event log that can be con sid-
+ered to be an instance of the LPM under evaluation. The rationale be hind this
+quality dimension: an LPM whose execution traces are observed mor e frequently
+in the event log represents it better. We transform the count of p attern instances
+of LN in L into a [0 , 1)-interval number through the following transformation:
+support(LN , L ) =
+∑
+σ∈L λk
+LN (σ)
+(∑
+σ∈L λk
+LN (σ))+1
+10
+
+
+===== PAGE 11 =====
+
+Conﬁdence An event ﬁts an LPM when it is part of a segment ξ ∈ L(LN ).
+The conﬁdence of event type e ∈ ΣM in LPM LN given event log L, is the ratio
+of events of type a in L that ﬁt LN :
+conﬁdence(a, L ) =
+∑
+σ∈L #a(λξ
+LN (σ))
+#a(L)
+We use the harmonic mean to aggregate conﬁdence values for individ ual activ-
+ities to a single metric, as it is more sensitive to a single lower-than-ave rage
+value than the geometric mean. We deﬁne the conﬁdence of an LPM LN given
+an event log L to be the harmonic mean of the individual conﬁdence scores of
+the event types of LN :
+conﬁdence(LN , L ) = |ΣM |∑
+a∈ΣM
+1
+conﬁdence(a,L)
+Language Fit Language ﬁt expresses the ratio of the behavior allowed by the
+LPM that is observed in the event log. LPMs that allow for much more b ehavior
+than what is observed are likely to overgeneralize and therefore do not describe
+the behavior in the event log well. The language ﬁt of an LPM LN given log L
+is:
+language ﬁt(LN , L ) = |{φ∈ L(LN )|∃σ∈ L:φ∈ λξ
+LN (σ)}|
+|L(LN )|
+Since |L(LN )| = ∞ in case LN contains a loop, language f it(LN , L ) = 0 for
+any LN containing a loop. Restricting the language and the LPM instances to
+sequences of a bounded length allows us to approximate language ﬁt for models
+with inﬁnite size language. Language ﬁt restricted to bound n ∈ N is deﬁned
+as:
+language ﬁtn (LN , L ) = |{φ∈ Ln(LN )|∃σ∈ L:φ∈ λξ
+LN (σ)}|
+|Ln(LN )|
+×
+a ×
+b ×
+c d
+Determinism Flower-like process trees, like the one shown on
+the right, are not desirable as they provide little insight in what
+behavior we are likely to observe. Deterministic LPMs have more
+predictive value in with regard to future behavior. When the
+language of LPM LN contains traces if type σaγ 1 and σbγ 2, the
+continuation of the trace after observing preﬁx σ can be either
+a or b, leaving some uncertainty. LPMs with a high degree of
+certainty are preferable over LPMs with a low degree of certainty.
+A metric for the determinism quality dimension is dependent on the pro cess
+model and not only on its language. Let R(LN ) be a set of reachable states of
+an LPM LN . WL : R(LN ) → N represents a function assigning the number of
+times a state is reached while replaying the ﬁtting segments of log L on LN .
+D : R(LN ) → N represents a function assigning the number of transitions en-
+abled in a certain state in LN . Determinism is deﬁned as:
+determinism(LN , L ) =
+∑
+m∈R(LN ) WL(m)
+∑
+m∈R(LN ) WL(m)·D(m)
+Coverage Let LN be an LPM and L be an event log. Let # ∗ (L) denote the
+total number of events of event log L. Coverage is deﬁned as the ratio of the
+number of events in the log after projecting the event log on the lab els of LN
+11
+
+
+===== PAGE 12 =====
+
+to the number of all events in the log:
+coverage(LN , L ) =
+#∗(L↾ΣM )
+#∗(L)
+5.1. Local Process Model Selection & Ranking
+The quality dimensions and metrics deﬁned are used to select and ran k local
+process models generated through the recursive process tree e xploration ap-
+proach. Often, one is interested in multiple quality criteria at the sam e time. A
+high-support local process model that has a low determinism score (e.g., a small
+ﬂower pattern) does not generate much process insight, while a de terministic
+pattern that has low support does not describe the behavior in the log very well.
+So it is possible to set thresholds per dimension. It is also useful to ra nk pat-
+terns according to a weighted average over the quality criteria. Th e appropriate
+weighting of the quality dimensions depends on the business question s and the
+situation at hand.
+5.2. Monotonicity Properties & Pruning
+Often one is not interested in local process models with a low support , con-
+ﬁdence, or determinism. Setting a minimum threshold for these qualit y criteria
+allows us to prune away those parts of the search space where we k now that ex-
+pansions of a candidate local process model can never meet the cr iteria because
+of monotonicity, resulting in a speedup of the proposed recursive p rocess tree
+exploration procedure. Pruning based on monotonicity is similar to th e prun-
+ing performed in the well-known Apriori algorithm [36], and other algo rithms
+inspired by the Apriori algorithm, such as [3].
+Any expansion of process tree P where a leaf node a ∈ P is replaced by
+subtree → (a, b ), → (b, a ), ∧ (a, b ), or ⟳ (a, b ) for any b ∈ ΣL is guaranteed to be
+less frequent, i.e. has lower support, than P . The intuition behind this is that
+expansion put additional requirements of the alignments, possibly c ausing some
+ﬁtting segments for a trace σ obtained by λ ξ
+P (σ ) to not ﬁt the expansion of P .
+Therefore, when P does not meet support threshold minsup, its expansions of
+any activity node a into → (a, b ), → (b, a ), ∧ (a, b ), and ⟳ (a, b ) can be pruned
+from the search space.
+Process tree P is guaranteed to be at least as deterministic as its expan-
+sion where activity node a ∈ P is replaced by subtree × (a, b ) or ∧ (a, b ) for any
+b ∈ ΣL. Therefore, when P does not meet determinism threshold mindet, its
+expansions of any activity node a into × (a, b ), and ∧ (a, b ) can be pruned from
+the search space.
+6. Alignment-Based Evaluation of Local Process Models
+We now describe a way to deﬁne function λ LN . We evaluate LPMs using
+Petri nets because of the rich set of analysis techniques available f or Petri nets.
+Important for the deﬁnition of λ LN is the notion of alignments [37], which aims
+to ﬁnd a sequence of model ﬁrings starting at the initial marking and ending in
+a ﬁnal marking that is an optimal approximation of the behavior in the event
+12
+
+
+===== PAGE 13 =====
+
+log. Alignments relate model traces and event log traces through a series of
+three types of moves: synchronous moves , moves on model , and moves on log .
+When an event in the event log trace can be performed in the proces s model,
+log and model can move synchronously. However, when a trace of the log does
+not ﬁt the model, log and model cannot move synchronously from th e start to
+the end of the trace. A move on model corresponds to a ﬁring of a transition
+in the model that cannot be mapped to an event in the log. A move on log
+corresponds to an event in the log that cannot be mapped to a tran sition ﬁring
+in the model. Since both moves on model and moves on log are suboptimal
+behavior, they are often assigned certain costs such that the alig nment will only
+chose to do moves on model or moves on log when these moves are unavoidable.
+Moves on model enable the unwanted behavior that a partial execution of the
+LPM can be identiﬁed as an LPM execution trace. To avoid this behavio r, we
+use a version of alignments where moves on model on non-silent tran sitions are
+prohibited (inﬁnite costs).
+Alignments aim to match an event log trace with a single execution of a
+process model. However, an event log trace can contain more than one execu-
+tion trace of an LPM. We modify the Petri net representation of th e LPM
+such that we connect each ﬁnal marking to the initial marking throu gh a
+silent transition, allowing the alignment to relate a single trace to multip le
+executions of the model. Figure 6a shows an example LPM and Figure 6 b
+shows the corresponding Petri net after transformation. We tr ansform LPM
+LN (N, M 0, MF ) with N = ( P, T, F, ΣM , ℓ ) into LN BL(NBL, M 0, {M0}) with
+NBL = (P, T BL, F BL, ΣM , ℓ BL), such that:
+• TBL = T ∪ { tblM |M ∈ MF },
+• FBL = F ∪ { (p, t blM )|M ∈ MF ∧ p ∈ M } ∪ { tblM |M ∈ MF ∧ p ∈ M0},
+• ℓBL ∈ TBL → ΣM ∪ { τ} with:
+ℓBL =
+{
+ℓ(T ), if t ∈ T,
+τ, otherwise.
+LN BL contains a set of added silent transitions, {tblM |M ∈ MF }, consisting
+of one silent transition for each ﬁnal marking M ∈ MF . Backloop : MF → Tbl
+is a bijective mapping from a ﬁnal marking M ∈ MF to a silent transition tblM .
+A silent transition tblM has all places in ﬁnal marking M as input and place M0
+as output. The number of executions of backloop transitions {tblM |M ∈ MF } in
+the alignments of L on LN indicates the number of executions of traces of LN in
+L. Note that alignments require the model to be in a marking M ∈ MF at the
+end of the alignment. This is impossible to obtain when pattern LN is absent
+in log L. Therefore, we set the ﬁnal marking to {M0}, allowing the alignments
+to make a complete sequence of moves on log , resulting in zero executions of
+the model.
+Figure 6c illustrates the concept of alignments through an example, showing
+the alignment of the non-ﬁtting trace ⟨A, A, C, B, A, A, C, B, B, C ⟩ on the model
+of Figure 6b. The top row of the alignments represents the behavio r of the log,
+13
+
+
+===== PAGE 14 =====
+
+A
+t1
+B
+t2
+C
+t3
+t4
+(a)
+A
+t1
+B
+t2
+C
+t3
+t4
+tbl1
+(b)
+A A C B ≫ ≫ A A C B ≫ ≫ B C
+A ≫ C B τ τ A ≫ C B τ τ ≫ ≫
+t1 t3 t2 t4 tbl1 t1 t3 t2 4 tbl1
+(c)
+Figure 6: (a) An example local process model, LN . (b) Process model LN BL , constructed
+from LN by adding a silent connection from ﬁnal to initial marking, a nd the ﬁnal marking
+set to the initial marking. (c) Alignment of the trace t1 on LN BL when disallowing model
+moves on non-silent transitions.
+A C B τ τ A C B τ τ
+t1 t3 t2 t4 tbl1 t1 t3 t2 4 tbl1
+1 2 1 1 1 1 2 1 1 1
+Table 1: Number of transitions enabled at each point in the al ignment
+while the middle row and the bottom row represent the behavior of th e model.
+≫ indicates no move , with a ≫ in the top row indicating a move on model and
+in the middle row indicating a move on log . The model is able to mimic the
+ﬁrst event of the trace by executing t1 with label A, but is not able to mimic
+the second A in the log, resulting in a move on log . The C and B in the log
+can be mimicked (by t3 and t2 respectively). Next event A in the log can only
+be mimicked by the model by ﬁrst ﬁring tbl1 , resulting in a move on model ,
+represented by the ≫ in the log. Afterwards, A can be mimicked and another
+move on log is needed for the second A. C and B can again be mimicked, after
+which a move on log is again needed as the log cannot mimic tbl1 . Would we
+not have prohibited moves on models on non-silent transition, the alignment
+could now have executed a move on model on A, enabling synchronous moves
+on both B and C, falsely giving the impression that the LPM would have a third
+occurrence in the trace. As we prohibited the model move on A, the only option
+is to decide a move on log on B and C, thereby not counting the incomplete
+occurrence of the pattern.
+LPM LN is evaluated on event log L by projecting L on the set of labels of
+LN , L′ = L ↾ΣM . The middle row of the alignment of L′ on LN BL represents
+the segmentation λ ξ
+LN , where τ moves on a transition tbli ∈ { tblm|M ∈ M F}
+indicates the start of a new segment. The alignment in Figure 6c show s that
+λ ξ
+LN (⟨A, A, C, B, A, A, C, B, B, C ⟩) = [ ⟨A, C, B ⟩2].
+14
+
+
+===== PAGE 15 =====
+
+Figure 7: Process model of the behavior of resource 10939 in t he BPIC’12 log, obtained using
+the Inductive Miner infrequent (20%).
+6.1. Determinism on Petri nets
+We now explain through an example how to calculate determinism for Pe tri
+nets. Each transition ﬁring in a Petri net corresponds to a change in the marking
+of the net. Table 1 shows the transitions ﬁred in the alignment of Figu re 6c. The
+bottom row represents the number of transitions that were enab led in the Petri
+net when the transition ﬁred. When t3 ﬁred, the Petri net was in a marking
+where both t2 and t3 were enabled. The determinism of the net corresponds to
+one divided by the average number of enabled transitions during rep lay. In the
+example, determinism(LN , L ) = 10
+12 .
+7. Case Studies
+We now evaluate the proposed local process model mining method on two
+real life data sets.
+7.1. BPIC ’12 Data Set
+The Business Process Intelligence Challenge (BPIC)’12 data set orig inates
+from a personal loan or overdraft application process in a global ﬁn ancial insti-
+tution. We transformed the event log to obtain traces of all activit ies in a single
+day performed by one speciﬁc resource (bank employee). This res ource was se-
+lected randomly to be resource id 10939. The event log for this spec iﬁc resource
+contains 49 cases (working days), 2763 events, and 14 activities. Discovering the
+local process models with the approach described in this paper took 34 seconds
+on a machine with a 4-core 2.4 GHz processor using a support thresh old of 0.7.
+Figure 7 shows the Petri net discovered for resource 10939 with t he Inductive
+Miner infrequent with a noise threshold of 20%. The discovered mode l only con-
+tains 13 non-silent transitions, as the activity W
+valideren aanvraag is ﬁltered
+15
+
+
+===== PAGE 16 =====
+
+(a)
+O SELEC-
+TED
+124/124
+O CREA-
+TED
+124/124
+O SENT
+124/124
+Support 0.9920
+Conﬁdence 1.0000
+Language ﬁt 5 1.0000
+Determinism 1.0000
+Coverage 0.1346
+(b)
+A ACCE-
+PTED
+103/104
+O SELEC-
+TED
+103/124
+O CREA-
+TED
+103/124
+O SENT
+103/124
+Support 0.9904
+Conﬁdence 0.8655
+Language ﬁt 5 1.0000
+Determinism 1.0000
+Coverage 0.1723
+(c)
+O SELEC-
+TED
+104/124
+A FINAL-
+IZED
+104/104
+O CREA-
+TED
+104/124
+O SENT
+104/124
+Support 0.9905
+Conﬁdence 0.8739
+Language ﬁt 5 1.0000
+Determinism 0.8811
+Coverage 0.1723
+(d)
+O CANC-
+ELED
+29/34
+A FINAL-
+IZED
+95/104
+O CREA-
+TED
+124/124
+O SENT
+124/124
+Support 0.9920
+Conﬁdence 0.9374
+Language ﬁt 5 1.0000
+Determinism 0.7591
+Coverage 0.1397
+(e)
+A ACCE-
+PTED
+64/104
+W Nabel-
+len
+oﬀertes
+48/235
+O SELEC-
+TED
+112/124
+Support 0.9912
+Conﬁdence 0.3933
+Language ﬁt 5 1.0000
+Determinism 0.6666
+Coverage 0.2753
+Figure 8: Five local process models discovered on the BPI’12 log using the technique presented
+in this paper. Clearly these models provide more insight tha n Figure 7.
+out by the Inductive Miner because of its low frequency. The proce ss model in
+Figure 7 is very close to a ”ﬂower model”, which is the model that allows all
+behavior over its activities. The Inductive Miner without noise ﬁlterin g returns
+exactly the ﬂower model over the 14 activities in the log. The discove red process
+is unstructured because of a high degree of variance of the event log, which is
+caused by 1) the resource performing work on multiple applications in terleaved,
+and 2) the resource only performing only a subset of the process s teps for each
+application, and which process steps he performs might diﬀer per ap plication.
+For such a high-variance event log, it is likely that no start-to-end p rocess model
+exists that accurately describes the behavior in the event log.
+Figure 8 shows ﬁve local process models discovered with the approa ch de-
+scribed in this paper, which give process insights that cannot be obt ained from
+the start-to-end process model in Figure 7. Local process mode l (a) shows that
+all occurrences of events of type O SELECTED, O CREATED, and O SENT,
+occur in this exact order. Figure 7 overgeneralizes by suggesting t hat for ex-
+ample O SELECTED can be followed by three skip (black) transitions, after
+which another O SELECTED or a A ACCEPTED can be performed, which
+never happens in reality. O SELECTED and O CREATED in 7 can be sepa-
+16
+
+
+===== PAGE 17 =====
+
+rated by A FINALIZED, which makes the dependency between O SELECTED
+and O CREATED a long-term dependency, of which discovery is still one of
+the open problems in process mining [38] The local process model disc overy
+method does ﬁnd this long term dependency, because each local pr ocess model
+candidate is evaluated on a version of the event log that is projecte d on the set
+of labels of candidate under evaluation.
+LPM (b) is an extension of LPM (a) as the last three activities in the se-
+quence are the same, therefore, each occurrence of LPM (b) in the log will also be
+an occurrence of (a). LPM (b) starts with an additional activity A ACCEPTED
+of which 103 out of 104 events follow this sequential pattern. The c onﬁdence of
+LPM (b) is lower than the conﬁdence of (a), because only 103 out of 124 events
+of the last three activities of the sequence in LPM (b) can be explained by the
+model while each event of these activities is explained by LPM (a). From this
+we can conclude that there are 21 occurrences of the sequence O SELECTED,
+O CREATED, O SENT that are not preceded by A ACCEPTED. Partly this
+can be explained by A ACCEPTED only occurring 104 times, however, the
+model also shows that there is one A ACCEPTED event that is not followed
+by O SELECTED, O CREATED, and O SENT. It might be the case that this
+A ACCEPTED event does not ﬁt the regular workﬂow, or alternatively it might
+be the case that the other process steps of after A ACCEPTED were executed
+by a diﬀerent resource. Note that the determinism of LPMs (a) and (b) is 1.0,
+since both LPMs are sequential. Language ﬁt of both LPMs is also 1.0, since
+both allow for only one execution path, which is observed in the log.
+Local process model (c) shows that all instances of A FINALIZED are in
+parallel with O SELECTED, and ultimately followed by O CREATED and
+O SENT. This is more informative than Figure 7, which allows for much more
+behavior over activities A FINALIZED, O SELECTED, O CREATED, and
+O SENT.
+Local process model (d) shows that each O CREATED and O SENT is pre-
+ceded by either O CANCELED (29 times) or A FINALIZED (95 times). Also
+most of the O CANCELED events (29 out of 34) and most of the A FINALIZED
+events (95 out of 104) are followed by O CREATED and O SENT. Figure 7 does
+not provide the insight that O CANCELED is followed by O CREATED and
+O SENT. Note that the determinism of LPM (d) is lower than the determinism
+of LPM (c). This is in agreement with the intuition of determinism, as the
+concurrency at the start of LPM (c) can be regarded as a choice between two
+activities followed by a deterministic step of executing the other act ivity, while
+LPM (d) starts with a choice between two activities. After the concurrenc y in
+LPM (c) and the choice in LPM (d) respectively, the two models proceed iden-
+tically. Local process model (d) has higher conﬁdence than LPMs (b) and (c) as
+only ﬁve of the O CANCELED and nine of the A FINALIZED events cannot
+be explained by the model. LPM (d) has a higher conﬁdence than LPM (c),
+mostly because all occurrences of O CREATED and O SENT could be aligned
+in LPM (d) while only 104 out of 124 could be aligned in LPM (c).
+Notice that the number of events that were aligned on A FINALIZED is
+lower in LPM (d) than in LPM (c). This indicates that there are six occur-
+17
+
+
+===== PAGE 18 =====
+
+rences where the alignments aligned on O CANCELED while it was possible
+as well to align on A FINALIZED (as both occurred). Therefore, an inclusive
+choice construct would have been a more correct representation than the exclu-
+sive choice that is currently included in the LPM. Note that our proce ss tree
+based discovery approach allows for easy extension with additional operators,
+like e.g. an inclusive choice operator.
+LPM (e) shows an example of a weaker local process model that performs
+lower on some quality metrics but can still be discovered with the desc ribed
+approach. The coverage of LPM (e) is much higher than the other models
+as W Nabellen oﬀertes (Dutch for “Calling after call for bids”) is a frequently
+occurring event in the log. The conﬁdence of LPM (e) is however much lower
+it explains only a fraction of the W Nabellen oﬀertes events.
+7.2. Comparison with Related Techniques
+In this section we apply some of the related techniques described in S ection
+3 to the event log of BPI’12 resource 10939 and compare the insight s that can
+be obtained with those methods with the insights that we obtained wit h LPM
+discovery.
+We start with the Declare miner [33], which mines a set of binary const raints
+from the data based on a set of constraint templates. Figure 9b sh ows the re-
+sult of the Declare miner [33] on the BPI’12 resource 10939 event log with a
+support threshold of 90%, requiring that the constraints hold in 90 % of the
+cases. The model shows that a choice constraint holds between O SELECTED
+and W Nabellen oﬀertes , indicating that on each working day either at least
+one event of type O SELECTED or W Nabellen oﬀertes occurs. The same can
+be said about the pairs of event W Nabellen oﬀertes and O SENT, W Nabellen
+oﬀertes and O CREATED, and W Nabellen oﬀertes and O Completeren aan-
+vraag. Furthermore a not chain succession constraint is discovered between
+W Nabellen oﬀertes and O SENT, indicating that W Nabellen oﬀertes and
+O SENT never directly follow each other. Not chain succession constraints are
+also discovered between W Nabellen oﬀertes and O SELECTED, and between
+W Nabellen oﬀertes and O CREATED. Note that the none of the insights that
+we obtained from the LPMs in Figure 8 could be obtained from this Decla re
+model.
+By lowering the support threshold parameter of the Declare miner t o 80%,
+we obtain a larger set of constraints. An exclusive choice constraint is found
+between W Valideren aanvraag and W Nabellen oﬀertes , indicating that 80% of
+the cases contain one of the two activities but not both. The same t ype of con-
+straint is found between W Valideren aanvraag and W Completeren aanvraag.
+The rest of the constraints found are not chain succession constraints.
+To ﬁnd constraints that can be deduced from the LPMs of Figure 8, such as
+the sequential ordering between O SELECTED and O CREATED from LPM
+(a), the support threshold would need to be lowered even further, lea ding to
+an overload of constraints being found by the Declare miner. Declar e miner
+evaluates the constraints based on the ratio of cases in which the c onstraint
+holds. However, when activities are often repeated within cases, this is not
+18
+
+
+===== PAGE 19 =====
+
+(a)
+ (b)
+Figure 9: (a) The result of the Declare miner [33] with a support threshold of 80% on the
+BPI’12 resource 10939 event log. (b) The result of the same method on the same log with
+support threshold 90%.
+Figure 10: Result of the Fuzzy miner [35] with default parame ters on the BPI’12 resource
+10939 event log.
+19
+
+
+===== PAGE 20 =====
+
+(a)
+ (b)
+(c)
+ (d)
+Figure 11: The ﬁrst four episodes discovered by ProM’s Episo de Miner [18] on the BPI’12
+resource 10939 event log.
+a useful evaluation criterion. Employee 10939 performs most of th e activities
+multiple times during a working day, therefore, to assess whether a n activity
+a is generally followed by an activity b it is more useful to count the ratio of
+occurrences of activity a that are followed by b as in LPM discovery, instead of
+the number of cases that contain an a event that is followed by a b event.
+Even more important is the fact that Declare miner is limited to binary
+constraints while LPM discovery mines n-ary relations. That is likely to be the
+cause of Declare mining not ﬁnding any of the LPM relations found in Fig ure
+8. At the same time this diﬀerence provides an explanation why Declar e mining
+ﬁnds so many uninteresting not chain succession constraints between activities:
+when there are multiple a events in a trace, you are likely to ﬁnd at least one a
+that is in a not chain succession relation with some activity b, leading to a high
+ratio of traces that fulﬁll such a not chain succession constraint.
+Figure 10 shows the result of the Fuzzy miner on the BPI’12 resourc e 10939
+event log with default parameters. The discovered Fuzzy model do es contain
+a path from O
+SELECTED through O CREATED to O SENT, which were
+shown to be in a sequential relation by LPM (a). However, the Fuzzy model al-
+lows for many more paths, therefore the sequential relation betw een those three
+activities cannot be inferred from the Fuzzy model. LPM (c) showed a sequen-
+tial path between O CREATED and O SENT that is preceded by an arbitrary
+ordering of activities O SELECTED and A FINALIZED. The Fuzzy model also
+shows arrows from both O SELECTED and A FINALIZED to O CREATED,
+however, as a Fuzzy model does not make a distinction between par allelism,
+inclusive choice constructs and exclusive choice constructs, it doe s not answer
+the question whether O SELECTED is preceded by both O SELECTED and
+A FINALIZED, or just by one of the two.
+Figure 11 shows the ﬁrst four episodes found with ProM’s Episode Min er
+on the BPI’12 resource 10939 event log. The ﬁrst two episodes sho w the same
+sequential ordering from O SELECTED, O CREATED, and O SENT that is
+represented by LPM (a). The ﬁrst episode suggests that the O CREATED
+event is optional, and can be skipped. LPM (a) however shows that all of
+the O SELECTED events are followed by an O CREATED event, therefore it
+is never skipped. Episode (c) indicates that O SELECTED and O CREATED
+can happen in any order, but both of them have to occur before O SENT occurs
+20
+
+
+===== PAGE 21 =====
+
+and episode (d) indicates that O SELECTED has to happen before O SENT
+and O CREATED can occur. Episodes (a), (c) and (d) can be considered to
+be less speciﬁc versions of episode (b). ProM’s Episode Miner is not able to
+discover patterns with choice constructs like LPM (d), or patterns with loops.
+7.3. Gazelle Data Set
+10307
+578/2797
+10315
+446/3449
+33449
+132/3658
+33469
+132/3612
+Figure 12: A non-sequential local process model discovered on the Gazelle data set.
+The Gazelle data set is a real life data set used in the KDD-CUP’2000 and
+contains customers’ web click-stream data provided by the Blue Ma rtini Soft-
+ware company. The Gazelle data set has been frequently used for e valuating
+sequential pattern mining algorithms. For each customer there is a series of
+page views, in which each page view is treated as an event. The data s et con-
+tains 29369 sequences (customers), 87546 events (page views) , and 1423 distinct
+event types (web pages). The average sequence length is three e vents. More
+detailed information on the Gazelle data set can be found in [39]. We com pare
+the local process models found on this data set with the sequential patterns ob-
+tained with the well-known sequential pattern mining algorithm Preﬁx Span [13]
+as implemented in the SPMF [14] sequential pattern mining library. We s et the
+minimal support parameter of the sequential pattern mining algorit hms to 10%
+of the number of input sequences. All obtained sequential patter ns were also dis-
+covered by the local process model miner. Additionally, several no n-sequential
+patterns were discovered that cannot be discovered with sequen tial pattern min-
+ing techniques, an example of which is shown in Figure 12. This shows th at this
+well-known sequential pattern mining evaluation data set contains f requent and
+high-conﬁdence patterns that cannot be found with sequential p attern mining
+approaches, but can be found with the local process model discov ery approach.
+This indicates the applicability of local process model discovery to th e ﬁeld of
+pattern mining.
+8. Conclusion & F uture Work
+This paper presents a method to discover local process models tha t can ex-
+press the same rich set of relations between activities as business p rocess models,
+but describe frequent fragments instead of complete start-to- end processes. We
+presented ﬁve quality criteria and corresponding metrics quantify ing the degree
+of representativeness of a local process model for an event log. We describe
+monotonicity properties of quality metrics that can be used to prun e the search
+space and speed up computation. We illustrate through two case st udies on
+21
+
+
+===== PAGE 22 =====
+
+real-life data sets that the proposed method enables the user to o btain process
+insight in the form of valuable patterns when the degree of randomn ess/variance
+of the event data prevents traditional process discovery techn iques to discover
+a structured start-to-end process model. Furthermore, the p roposed local pro-
+cess model discovery approach is able to discover long-term depen dencies, which
+most process discovery approaches have diﬃculties with, as a resu lt of evaluating
+the local process models on a projected version of the event log.
+The computational time involved in discovering local process models r apidly
+grows with the number of activities in the event log. Therefore, we c onsider au-
+tomatic discovery of projections on the event log (limiting search to a promising
+subset of the activities) to be an important area of future work, a s it would
+enable the discovery of local process models on logs with larger numb ers of ac-
+tivities. An alternative approach to deal with larger numbers of act ivities that
+is to be explored is the use of meta-heuristic search methods, e.g. s imulated
+annealing, which allows partial exploration of the search space.
+Finally, we consider it to be a relevant future direction of research t o enhance
+local process models with guards, time information, and resource in formation.
+References
+[1] W. M. P. van der Aalst, Process Mining: Data Science in Action, Spr inger,
+2016.
+[2] H. Mannila, H. Toivonen, A. I. Verkamo, Discovery of frequent e pisodes
+in event sequences, Data Mining and Knowledge Discovery 1 (3) (199 7)
+259–289.
+[3] R. Agrawal, R. Srikant, Mining sequential patterns, in: Proceed ings of the
+11th International Conference on Data Engineering (ICDE), IEE E, 1995,
+pp. 3–14.
+[4] G. Casas-Garriga, Discovering unbounded episodes in sequentia l data, in:
+Proceedings of the 7th European Conference on Principles and Pra ctice of
+Knowledge Discovery in Databases (PKDD), Vol. 7, Springer Science &
+Business Media, 2003, p. 83.
+[5] M. Atallah, W. Szpankowski, R. Gwadera, Detection of signiﬁcant sets of
+episodes in event sequences, in: Proceedings of the 4th IEEE Inte rnational
+Conference on Data Mining (ICDM), IEEE, 2004, pp. 3–10.
+[6] W. Reisig, Petri nets: an introduction, Vol. 4, Springer Science & Business
+Media, 2012.
+[7] Object Management Group, Notation (BPMN) version 2.0, OMG Sp eciﬁ-
+cation.
+[8] J. C. A. M. Buijs, Flexible evolutionary algorithms for mining struct ured
+process models, Ph.D. thesis, PhD thesis. Eindhoven, The Netherla nds:
+Technische Universiteit Eindhoven, 2014 (2014).
+22
+
+
+===== PAGE 23 =====
+
+[9] L. R. Rabiner, A tutorial on hidden markov models and selected ap plica-
+tions in speech recognition, Proceedings of the IEEE 77 (2) (1989) 257–286.
+[10] C. Goller, A. Kuchler, Learning task-dependent distributed re presentations
+by backpropagation through structure, in: Neural Networks, 1 996., IEEE
+International Conference on, Vol. 1, IEEE, 1996, pp. 347–352.
+[11] S. Hochreiter, J. Schmidhuber, Long short-term memory, Ne ural computa-
+tion 9 (8) (1997) 1735–1780.
+[12] S. J. J. Leemans, D. Fahland, W. M. P. van der Aalst, Discoverin g block-
+structured process models from event logs - a constructive appr oach, in:
+Application and Theory of Petri Nets and Concurrency, Springer, 2013,
+pp. 311–329.
+[13] J. Pei, J. Han, B. Mortazavi-Asl, H. Pinto, Q. Chen, U. Dayal, M.- C.
+Hsu, PreﬁxSpan: mining sequential patterns eﬃciently by preﬁx-p rojected
+pattern growth, in: Proceedings of the 17th International Conf erence on
+Data Engineering (ICDE), IEEE, 2001, pp. 215–224.
+[14] P. Fournier-Viger, A. Gomariz, T. Gueniche, A. Soltani, C.-W. Wu , V. S.
+Tseng, SPMF: a java open-source pattern mining library, The Jour nal of
+Machine Learning Research 15 (1) (2014) 3389–3393.
+[15] J. C. A. M. Buijs, B. F. van Dongen, W. M. P. van der Aalst, A gen etic
+algorithm for discovering process trees, in: Proceedings of the 20 12 IEEE
+Congress on Evolutionary Computation (CEC), IEEE, 2012, pp. 1– 8.
+[16] G. Keller, A.-W. Scheer, M. N¨ uttgens, Semantische Prozeßmo dellierung
+auf der Grundlage” Ereignisgesteuerter Prozeßketten (EPK)”, Institut f¨ ur
+Wirtschaftsinformatik, 1992.
+[17] International Organization for Standardization, ISO/IEC 19 505-1:2012 -
+Information technology - Object Management Group Uniﬁed Modelin g
+Language (OMG UML) - Part 1: Infrastructure.
+[18] M. Leemans, W. M. P. van der Aalst, Discovery of frequent epis odes in event
+logs, in: Data-Driven Process Discovery and Analysis, Springer, 20 14, pp.
+1–31.
+[19] J. Lu, W. Chen, O. Adjei, M. Keech, Sequential patterns post processing
+for structural relation patterns mining, Strategic Advancement s in Utilizing
+Data Mining and Warehousing Technologies: New Concepts and Develo p-
+ments (2009) 216.
+[20] J. Lu, X.-F. Wang, O. Adjei, F. Hussain, Sequential patterns g raph and
+its construction algorithm, Chinese Journal of Computers 27 (6) ( 2004)
+782–788.
+23
+
+
+===== PAGE 24 =====
+
+[21] J. Lu, W. Chen, M. Keech, Graph-based modelling of concurren t sequen-
+tial patterns, Exploring Advances in Interdisciplinary Data Mining an d
+Analytics: New Trends (2011) 110.
+[22] J.-Y. Jung, J. Bae, L. Liu, Hierarchical business process clust ering, in: Pro-
+ceedings of the 2008 IEEE International Conference on Services Computing
+(SCC), Vol. 2, IEEE, 2008, pp. 613–616.
+[23] C. Diamantini, D. Potena, E. Storti, Mining usage patterns from a repos-
+itory of scientiﬁc workﬂows, in: Proceedings of the 27th Annual AC M
+Symposium on Applied Computing (SAC), ACM, 2012, pp. 152–157.
+[24] C. Diamantini, L. Genga, D. Potena, E. Storti, Pattern discove ry from
+innovation processes, in: Proceedings of the 2013 International Conference
+on Collaboration Technologies and Systems (CTS), IEEE, 2013, pp. 457–
+464.
+[25] C. Diamantini, L. Genga, D. Potena, Behavioral process mining f or unstruc-
+tured processes, Journal of Intelligent Information Systems (2 016) 1–28.
+[26] B. F. Van Dongen, W. M. P. Van der Aalst, Multi-phase process m in-
+ing: Building instance graphs, in: International Conference on Con ceptual
+Modeling, Springer, 2004, pp. 362–376.
+[27] M. Song, C. W. G¨ unther, W. M. P. Van der Aalst, Trace cluster ing in
+process mining, in: Business Process Management Workshops, Spr inger,
+2008, pp. 109–120.
+[28] R. P. Jagadeesh Chandra Bose, W. M. P. van der Aalst, Contex t aware trace
+clustering: Towards improving process mining results, in: Proceedin gs of
+the 2009 SIAM International Conference on Data Mining, SIAM, 20 09, pp.
+401–412.
+[29] F. Folino, G. Greco, A. Guzzo, L. Pontieri, Mining usage scenario s in busi-
+ness processes: Outlier-aware discovery and run-time prediction , Data &
+Knowledge Engineering 70 (12) (2011) 1005–1029.
+[30] B. F. A. Hompes, J. C. A. M. Buijs, W. M. P. van der Aalst, P. M. D ixit,
+J. Buurman, Discovering deviating cases and process variants usin g trace
+clustering, in: Proceedings of the 27th Benelux Conference on Art iﬁcial
+Intelligence (BNAIC), November, pp. 5–6.
+[31] M. Pesic, H. Schonenberg, W. M. P. Van der Aalst, Declare: Full support
+for loosely-structured processes, in: Enterprise Distributed Ob ject Com-
+puting Conference, 2007. EDOC 2007. 11th IEEE International, I EEE,
+2007, pp. 287–287.
+[32] S. Sch¨ onig, C. Cabanillas, S. Jablonski, J. Mendling, Mining the or gani-
+sational perspective in agile business processes, in: Enterprise, B usiness-
+Process and Information Systems Modeling, Springer, 2015, pp. 3 7–52.
+24
+
+
+===== PAGE 25 =====
+
+[33] F. M. Maggi, A. J. Mooij, W. M. P. Van der Aalst, User-guided disc overy
+of declarative process models, in: Computational Intelligence and D ata
+Mining (CIDM), 2011 IEEE Symposium on, IEEE, 2011, pp. 192–199.
+[34] F. M. Maggi, T. Slaats, H. A. Reijers, The automated discovery of hybrid
+processes, in: Business Process Management, Springer, 2014, p p. 392–399.
+[35] C. W. G¨ unther, W. M. P. Van Der Aalst, Fuzzy mining–adaptive p ro-
+cess simpliﬁcation based on multi-perspective metrics, in: Business P rocess
+Management, Springer, 2007, pp. 328–343.
+[36] R. Agrawal, R. Srikant, et al., Fast algorithms for mining associat ion rules,
+in: Proceedings of the 20th International Conference on Very La rge Data
+Bases (VLDB), Vol. 1215, Morgan Kaufmann, 1994, pp. 487–499.
+[37] W. M. P. van der Aalst, A. Adriansyah, B. F. van Dongen, Replay ing his-
+tory on process models for conformance checking and performan ce analysis,
+Wiley Interdisciplinary Reviews: Data Mining and Knowledge Discovery
+2 (2) (2012) 182–192.
+[38] W. M. P. Van der Aalst, A. J. M. M. Weijters, Process mining: a re search
+agenda, Computers in industry 53 (3) (2004) 231–244.
+[39] R. Kohavi, C. E. Brodley, B. Frasca, L. Mason, Z. Zheng, KDD- cup 2000 or-
+ganizers’ report: Peeling the onion, ACM SIGKDD Explorations News let-
+ter 2 (2) (2000) 86–93.
+25

@@ -57,6 +57,8 @@ profiler:
   topn_edges: 50
   topn_loops: 50
   topn_kernels: 30
+  integrated_profile:
+    enabled: true
   loop_analyzer:
     enabled: true
     top_streams_per_db: 3

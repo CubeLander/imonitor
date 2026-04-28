@@ -1,5 +1,9 @@
 # Ascend vLLM 启动与 Smoke 手册（容器内执行）
 
+> 说明（2026-04-23）：
+> 根目录 `scripts/` 与 `patches/` 已作为探索期遗留内容清理。
+> 本文中的脚本路径保留为历史记录，复现请优先使用 `analyzer/` 当前流程或参考 `develop/` 已落地产物。
+
 本文档用于在**已配置好 vllm-ascend 的容器**里完成以下工作：
 
 - 基线检查（CANN 8.5 / 8 张 NPU / msprof）

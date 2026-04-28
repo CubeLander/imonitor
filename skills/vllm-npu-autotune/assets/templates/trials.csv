@@ -1,0 +1,1 @@
+trial_id,mode,patch_id,state_before,state_after,baseline_metrics_file,trial_metrics_file,baseline_mean_tok_s,trial_mean_tok_s,delta_pct,baseline_cv,trial_cv,p95_baseline_ms,p95_trial_ms,error_baseline,error_trial,decision,decision_reason

@@ -1,0 +1,10 @@
+{
+  "run_id": "run_001",
+  "current_state": "S0_DEFINE_TARGET",
+  "mode": "real",
+  "accepted_patch_count": 0,
+  "trial_index": 0,
+  "baseline_ref": "",
+  "latest_trial_ref": "",
+  "history": []
+}
